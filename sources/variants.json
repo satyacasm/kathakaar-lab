@@ -1,0 +1,28 @@
+{
+ "_note": "Spelling variants and near-synonyms used by old translations. sources_search.py expands any query term found here (match is diacritic- and case-insensitive). Add to it freely.",
+ "groups": [
+  ["banyan", "banian", "nyagrodha", "vata tree", "fig tree"],
+  ["child", "boy", "infant", "babe", "baby"],
+  ["flood", "deluge", "waters", "ocean", "dissolution", "pralaya"],
+  ["krishna", "krsna", "krishna", "keshava", "kesava", "govinda", "vasudeva"],
+  ["vishnu", "visnu", "narayana", "hari"],
+  ["shiva", "siva", "mahadeva", "rudra", "sankara", "shankara"],
+  ["brahma", "brahman", "grandsire"],
+  ["rama", "raghava"],
+  ["sita", "janaki", "vaidehi", "maithili"],
+  ["hanuman", "hanumat", "maruti", "anjaneya"],
+  ["ravana", "dasagriva", "ten-headed"],
+  ["markandeya", "markandya"],
+  ["yudhishthira", "yudhishthir", "yudhisthira", "dharmaraja"],
+  ["arjuna", "partha", "dhananjaya", "phalguna"],
+  ["draupadi", "krishnaa", "panchali", "yajnaseni"],
+  ["bhishma", "devavrata", "ganga's son"],
+  ["karna", "radheya", "vasusena"],
+  ["indra", "sakra", "shakra", "purandara"],
+  ["ganesha", "ganesa", "ganapati", "vinayaka"],
+  ["parvati", "uma", "gauri", "durga"],
+  ["savitri", "savitree"],
+  ["yama", "dharmaraja", "lord of death"],
+  ["sage", "rishi", "muni", "ascetic"]
+ ]
+}

@@ -1,0 +1,42 @@
+# Allowlist: ignore everything, then opt in code + docs only.
+/*
+
+!/.gitignore
+!/README.md
+!/PIPELINE.md
+!/ASSETS.md
+!/PUBLISHING_SETUP.md
+
+# Brand docs (not voice references or social images)
+!/brand/
+/brand/*
+!/brand/STYLE.md
+!/brand/VOICES.md
+
+# Pipeline tools
+!/pipeline/
+
+# Engine code (no node_modules, rendered media, venvs)
+!/engine/
+/engine/app/*
+!/engine/app/src/
+!/engine/app/package.json
+!/engine/app/package-lock.json
+!/engine/app/remotion.config.ts
+!/engine/app/tsconfig.json
+
+# Source library index (texts re-download via pipeline/fetch_sources.py)
+!/sources/
+/sources/texts/
+
+# Never commit, anywhere
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+*.log
+*.wav
+*.mp3
+*.mp4
+*.mov
+secrets/
