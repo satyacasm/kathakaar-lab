@@ -1,0 +1,4 @@
+{"credits_per_month": 600, "credits_per_reel": 10,
+ "hero_rate": {"seedance_2_0_mini": {"480p": 0.5, "720p": 1.0}},
+ "still": {"model": "flux2-klein-4b", "quantize": 4, "steps": 4, "width": 1344, "height": 768},
+ "clip": {"width": 1920, "height": 1080, "fps": 30}}

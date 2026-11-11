@@ -1,0 +1,5 @@
+# Added to pipeline/.venv by the motion/finish stages (add-only; numpy, pillow, opencv-python-headless were already there)
+onnxruntime>=1.31  # MIT; runs Depth Anything V2 Small (ONNX) on CPU
+# pulled in by onnxruntime: flatbuffers, packaging, protobuf
+# External binaries (not pip): tools/rife/rife-ncnn-vulkan-20221029-macos (MIT), tools/esrgan/realesrgan-ncnn-vulkan 20220424 (MIT/BSD-3)
+# Weights: models/depth-anything-v2-small/model.onnx (Apache-2.0, onnx-community export of Depth-Anything-V2-Small)

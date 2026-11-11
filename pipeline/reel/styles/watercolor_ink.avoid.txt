@@ -1,0 +1,1 @@
+border, frame, margin, torn paper edge, deckled edge, white edge, text, watermark, signature

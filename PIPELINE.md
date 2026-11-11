@@ -51,6 +51,17 @@ Line timings become `timing.json` and the storyboard. Claude writes `engine/app/
 - **Long:** YouTube (`videos.insert`, `captions.insert` for Hindi and English, localized English title and description). **The English audio track is a manual step in YouTube Studio** (Languages → Add language → Add audio track): the API has no endpoint for it. The pipeline prepares the file and the exact steps.
 - **Logging:** post IDs and URLs go into `episode.json`.
 
+## Music reels (song-timed, low cost)
+One-minute reels cut to a song, about 10 Higgsfield credits each (600 a month). Stills and most motion are made locally; a few "hero" clips are bought. Full contract, JSON formats and machine rules: `pipeline/REEL_PIPELINE.md`.
+
+Scaffold: `pipeline/new_reel.sh <nnn-slug>`. Then, with `R="pipeline/.venv/bin/python pipeline/reel.py <slug>"`:
+- `$R check`: validate `script/shots.json` and `script/edit.json`; print shot lengths, hero seconds, credit estimate vs caps.
+- `$R stills` / `$R motion`: local stills, then local animation of `local` shots (`--only 3,5`, `--force`).
+- `$R hero-plan`: print what to buy for hero shots (refuses over the per-reel or monthly cap). `$R hero-log --n 2 --credits 2 --job <id>`: record a purchase in `episodes/credits.json`.
+- `$R finish`: upscale and retime the hero clips in `out/hero_raw/`.
+- `$R assemble`: cut to bars, transitions, grade, captions, end card, then `out/final/reel_SILENT.mp4` (upload master), `reel_with_song.mp4` (preview) and `cover.jpg`. `--captions` redoes only the caption pass.
+- `$R all`: check, stills, motion, finish, assemble; stops and lists any hero clips still missing.
+
 ## Platform facts that shape the design
 - **YouTube API uploads from a new, unaudited Google Cloud project are forced to private.** Until the free API audit passes, the pipeline uploads as private and Satyam switches the video to public.
 - `captions.insert` costs 400 quota units, against a default of 10,000 per day.
