@@ -30,6 +30,6 @@ pipeline/loop/run.sh pull            # run any job by hand (pull|trends|ig-refre
 `review_prompt.md` (instructions only) is passed to `claude -p --model claude-sonnet-5-5 --permission-mode dontAsk`,
 so anything not allow-listed is denied without prompting. Allowed: Read, Glob, Grep; Bash only for
 `python3 pipeline/features.py *`, `analytics.py yt map*|status*`, `review.py *`, `trends.py digest*`,
-`pipeline/loop/inbox.py *`, `sqlite3 -readonly cache/analytics/*`; Edit (which covers Write) only under `ideas/**`.
+`pipeline/loop/inbox.py *`; Edit (which covers Write) only under `ideas/**`. Denied: raw `sqlite3` (its `.shell` dot-command runs arbitrary commands; comments are untrusted input), curl, git, rm, web tools, reading `secrets/`.
 WebFetch, WebSearch, git, rm and MCP servers are off. It never publishes, edits code or commits. 30 min timeout.
 Note: `features.py`, `analytics.py yt map --set` and `review.py` write under `cache/` and `episodes/` by design.

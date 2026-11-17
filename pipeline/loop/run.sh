@@ -80,9 +80,8 @@ job_review() {
         "Bash(python3 pipeline/review.py *)" \
         "Bash(python3 pipeline/trends.py digest*)" \
         "Bash(python3 pipeline/loop/inbox.py *)" \
-        "Bash(sqlite3 -readonly cache/analytics/*)" \
         "Edit(ideas/**)" \
-      --disallowedTools "WebFetch" "WebSearch" "Bash(git *)" "Bash(rm *)" \
+      --disallowedTools "WebFetch" "WebSearch" "Bash(git *)" "Bash(rm *)" "Bash(sqlite3 *)" "Bash(curl *)" "Read(secrets/**)" "Read(~/.ssh/**)" \
       --strict-mcp-config \
       --no-session-persistence \
       --output-format text < /dev/null
