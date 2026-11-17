@@ -8,7 +8,8 @@ Never paste a token, secret or JSON file's contents into the Claude chat. Files 
 
 1. Go to **console.cloud.google.com** and sign in with the Google account that owns the Kathakaar channel.
    Create a project named "kathakaar-publisher".
-2. **APIs & Services → Library →** "YouTube Data API v3" **→ Enable.**
+2. **APIs & Services → Library →** "YouTube Data API v3" **→ Enable.** Then search **"YouTube Analytics API" → Enable**
+   too (the analytics loop reads views, watch time and retention through it).
 3. **Google Auth Platform → Branding / Audience** (older consoles call this "OAuth consent screen"):
    - App name: Kathakaar Publisher. Add your email for support and as the developer contact.
    - Audience: **External.**
@@ -23,7 +24,9 @@ Never paste a token, secret or JSON file's contents into the Claude chat. Files 
 6. Connect the channel:
    `! ~/kathakaar-lab/pipeline/youtube_publish.py setup`
    A browser tab opens. Pick the channel's account, click **Advanced → Go to Kathakaar Publisher (unsafe)**,
-   allow access, then close the tab. The terminal then prints the channel name.
+   allow access (**tick every permission box**: upload, manage, and "view YouTube Analytics reports"), then close
+   the tab. The terminal then prints the channel name and `analytics: OK`. If it says analytics FAILED, it tells you
+   whether the API isn't enabled (step 2) or a permission box was left unticked (run setup again).
 7. **Remove the private-only lock (optional but needed for one-step publishing).** Uploads from a new, unaudited API
    project are locked to private, so until this passes you switch each video to Public in Studio yourself (one click).
    Apply through the **YouTube API Services Audit and Quota Extension form**
@@ -38,13 +41,16 @@ Never paste a token, secret or JSON file's contents into the Claude chat. Files 
 3. In the app: **Instagram → API setup with Instagram login.**
    - Under "Generate access tokens", **Add account** and log in as the Kathakaar Instagram account.
      If asked, accept the tester invite in Instagram (Settings → Website permissions → Apps and websites → Tester invites).
-   - Make sure the permissions include `instagram_business_basic` and `instagram_business_content_publish`.
+   - Make sure the permissions include `instagram_business_basic`, `instagram_business_content_publish`,
+     `instagram_business_manage_insights` (views, reach, watch time) and `instagram_business_manage_comments`
+     (reading comments for feedback).
    - **Generate token** and copy it. Also copy the **Instagram app secret** (App settings → Basic, or shown on the same
      page).
 4. In **Terminal.app** (not in Claude, because the input is hidden), run:
    `~/kathakaar-lab/pipeline/instagram_publish.py setup`
    Paste the token, then the app secret. It saves a 60-day token and prints the account it will post to.
-5. Check it any time with `! ~/kathakaar-lab/pipeline/instagram_publish.py check`. Renew before 60 days with
+5. Check it any time with `! ~/kathakaar-lab/pipeline/instagram_publish.py check`. It also tests `insights` and
+   `comments` access; a FAILED line names the permission to add (then generate a new token and rerun setup). Renew before 60 days with
    `refresh`.
 
 The app can stay in **Development** mode: an app in development can still post to the accounts that have a role on it,

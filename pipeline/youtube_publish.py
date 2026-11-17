@@ -6,7 +6,7 @@ Credentials live in ~/kathakaar-lab/secrets/ (chmod 600) and are never printed:
   youtube_token.json    written by `setup`: the refresh token for the channel
 
   setup                       open the Google consent page in the browser (loopback + PKCE), save the refresh token
-  check                       show the channel the token posts to
+  check                       show the channel the token posts to, and test read access to YouTube Analytics
   publish <episode> --yes-publish [--privacy private|unlisted|public] [--publish-at 2026-11-08T18:30:00+05:30]
           [--video short-hi.mp4] [--synthetic] [--dry-run]
                               upload out/final/<video> with the Hindi title, description and tags from
@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-import http.server
+import http.server as http_server
 import json
 import os
 import re
@@ -44,10 +44,14 @@ LAB = Path(__file__).resolve().parents[1]
 SECRETS = LAB / "secrets"
 CLIENT = SECRETS / "youtube_client.json"
 TOKEN = SECRETS / "youtube_token.json"
-SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl"
+# upload: videos.insert; force-ssl: captions + reading comments; yt-analytics.readonly: views/retention (analytics.py)
+SCOPE_ANALYTICS = "https://www.googleapis.com/auth/yt-analytics.readonly"
+SCOPES = ("https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl "
+          + SCOPE_ANALYTICS)
 AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "https://www.googleapis.com/youtube/v3"
+ANALYTICS = "https://youtubeanalytics.googleapis.com/v2/reports"
 UPLOAD = "https://www.googleapis.com/upload/youtube/v3"
 CHUNK = 8 * 1024 * 1024
 REDACT: list[str] = []
@@ -119,7 +123,7 @@ def cmd_setup(_):
     state = pysecrets.token_urlsafe(16)
     got: dict = {}
 
-    class H(http.server.BaseHTTPRequestHandler):
+    class H(http_server.BaseHTTPRequestHandler):
         def do_GET(self):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             got.update({k: v[0] for k, v in q.items()})
@@ -131,7 +135,7 @@ def cmd_setup(_):
         def log_message(self, *a):
             pass
 
-    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    srv = http_server.HTTPServer(("127.0.0.1", 0), H)
     redirect = f"http://127.0.0.1:{srv.server_port}"
     url = AUTH + "?" + urllib.parse.urlencode({
         "client_id": c["client_id"], "redirect_uri": redirect, "response_type": "code", "scope": SCOPES,
@@ -154,6 +158,7 @@ def cmd_setup(_):
         sys.exit("Google returned no refresh token; remove the app's access at myaccount.google.com/permissions and retry")
     save(TOKEN, {"refresh_token": r["refresh_token"], "access_token": r["access_token"],
                  "expires_at": time.time() + int(r.get("expires_in", 3600)),
+                 "scopes": r.get("scope", "").split(),
                  "saved": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     print(f"saved {TOKEN.relative_to(LAB)} (chmod 600)")
     cmd_check(None)
@@ -167,6 +172,24 @@ def cmd_check(_):
     ch = items[0]
     print(f"channel: {ch['snippet']['title']}  (https://www.youtube.com/channel/{ch['id']})")
     print(f"long uploads allowed: {ch.get('status', {}).get('longUploadsStatus', '?')}")
+    granted = json.loads(TOKEN.read_text()).get("scopes")
+    if granted is not None and SCOPE_ANALYTICS not in granted:
+        sys.exit("analytics: NOT granted. Run `pipeline/youtube_publish.py setup` again and tick every permission box")
+    # probe: last 7 days of channel views (needs the YouTube Analytics API enabled in the Cloud project)
+    end = datetime.now(timezone.utc).date()
+    q = urllib.parse.urlencode({"ids": "channel==MINE", "metrics": "views",
+                                "startDate": str(end.fromordinal(end.toordinal() - 7)), "endDate": str(end)})
+    req = urllib.request.Request(f"{ANALYTICS}?{q}", headers=auth_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            rows = json.loads(resp.read()).get("rows") or [[0]]
+        print(f"analytics: OK (channel views, last 7 days: {rows[0][0]})")
+    except urllib.error.HTTPError as e:
+        msg = scrub(e.read().decode(errors="replace"))
+        hint = ("enable \"YouTube Analytics API\" in the Cloud project (APIs & Services → Library)"
+                if "has not been used" in msg or "disabled" in msg else
+                "run `pipeline/youtube_publish.py setup` again and allow all permissions")
+        sys.exit(f"analytics: FAILED (HTTP {e.code}): {hint}\n{msg[:300]}")
 
 
 # ------------------------------------------------------------------ metadata from the package

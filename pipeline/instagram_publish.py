@@ -5,7 +5,8 @@ Standard library only. Credentials live in ~/kathakaar-lab/secrets/instagram.jso
 
   setup                      ask (hidden input) for the token from the app dashboard and, optionally, the app secret;
                              exchange for a 60-day token, look up the account, save. Run it in Terminal.app.
-  check                      verify the saved token and show the account it posts to, plus days left
+  check                      verify the saved token and show the account it posts to, plus days left; test that
+                             insights and comments can be read (needed by analytics.py)
   refresh                    renew the 60-day token (allowed once it is at least 24 h old)
   publish <episode> --yes-publish [--video short-hi.mp4] [--dry-run]
                              upload out/final/<video> as a Reel with the caption in out/package/caption_instagram.txt,
@@ -105,11 +106,34 @@ def cmd_setup(_):
     print(f"Saved. Posting account: @{s['username']} ({s['account_type']}); token days left: {days_left(s)}")
 
 
+def probe(label: str, permission: str, method: str, url: str, params: dict) -> bool:
+    """Try one read call; report OK or which dashboard permission is missing. Never exits."""
+    try:
+        call(method, url, params)
+        print(f"{label}: OK")
+        return True
+    except SystemExit as e:
+        print(f"{label}: FAILED. Add `{permission}` under the app's permissions, generate a new token, and run setup "
+              f"again\n  {str(e)[:300]}")
+        return False
+
+
 def cmd_check(_):
     s = load()
-    me = call("GET", f"{GRAPH}/{VERSION}/me", {"fields": "user_id,username,account_type", "access_token": s["access_token"]})
+    tok = s["access_token"]
+    me = call("GET", f"{GRAPH}/{VERSION}/me", {"fields": "user_id,username,account_type", "access_token": tok})
     print(f"OK: @{me.get('username')} ({me.get('account_type')}), user id matches: {me['user_id'] == s['ig_user_id']}; "
           f"token days left: {days_left(s)}")
+    ok = probe("insights", "instagram_business_manage_insights", "GET", f"{GRAPH}/{VERSION}/{s['ig_user_id']}/insights",
+               {"metric": "reach", "period": "day", "access_token": tok})
+    media = call("GET", f"{GRAPH}/{VERSION}/{s['ig_user_id']}/media", {"fields": "id", "limit": 1, "access_token": tok})
+    if media.get("data"):
+        ok &= probe("comments", "instagram_business_manage_comments", "GET",
+                    f"{GRAPH}/{VERSION}/{media['data'][0]['id']}/comments", {"fields": "id", "access_token": tok})
+    else:
+        print("comments: not tested yet (no posts on the account)")
+    if not ok:
+        raise SystemExit(1)
 
 
 def cmd_refresh(_):
