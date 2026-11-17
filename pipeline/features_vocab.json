@@ -1,0 +1,103 @@
+{
+  "_note": "Controlled vocabulary for judged per-video tags (pipeline/features.py). Pick by the definitions, not by taste: Phase 3 correlates these with performance, so consistency beats richness. Each field: one definition, and the allowed values with one-line definitions.",
+  "fields": {
+    "hook_type": {
+      "definition": "What the first ~2 seconds of audio/text does to grab attention.",
+      "values": {
+        "question": "Opens by asking the viewer a question (spoken or on-screen).",
+        "bold_claim": "Opens with a surprising or provocative statement of fact or opinion, no question mark.",
+        "number_fact": "Opens on a specific number, date or measure as the hook (60,000 years, 17 places, 1.8 crore years).",
+        "mystery": "Opens with an unexplained puzzle or teaser that withholds the answer, without a literal question.",
+        "action_cold_open": "Opens mid-event: a battle, a strike, a chase, with no setup.",
+        "dialogue": "Opens on a character speaking in quotes.",
+        "emotional_appeal": "Opens with a feeling-led address to the viewer (love, loyalty, sorrow, pride), not a fact or question."
+      }
+    },
+    "story_type": {
+      "definition": "The narrative shape of the video as a whole.",
+      "values": {
+        "battle": "A fight or war is the main event.",
+        "sacrifice": "A character gives up life, throne or comfort for someone or something.",
+        "mystery_evidence": "Investigates whether/where something real exists: places, texts, archaeology.",
+        "festival": "Explains the origin or meaning of a festival.",
+        "devotion": "Loyalty, love or worship between a devotee and a deity or elder.",
+        "origin": "How a god, rite, name or practice came to be.",
+        "moral_dilemma": "A character is tested or must choose between two right/wrong paths.",
+        "sacred_geography": "Tells the story through real places and routes."
+      }
+    },
+    "emotion": {
+      "definition": "The single dominant emotion the video aims to leave in the viewer.",
+      "values": {
+        "awe": "Wonder at scale, power or the sacred.",
+        "rage": "Fury, righteous anger, ferocity.",
+        "grief": "Sorrow, loss, tenderness at death or separation.",
+        "curiosity": "A wish to find out more; puzzle-solving.",
+        "pride": "Pride in heritage, courage or fidelity.",
+        "devotion": "Reverence, love and surrender toward the divine or a dharmic ideal."
+      }
+    },
+    "epic": {
+      "definition": "The textual tradition the story comes from.",
+      "values": {
+        "ramayana": "Valmiki Ramayana and its direct episodes.",
+        "mahabharata": "Mahabharata and its direct episodes.",
+        "purana": "A Purana-sourced story (Devi Mahatmya, Vishnu Purana, etc.).",
+        "folk": "Regional or oral tradition not anchored in one text.",
+        "festival_lore": "Stories assembled across several texts around a festival."
+      }
+    },
+    "protagonist": {
+      "definition": "The main character the story follows, one lowercase single name (rama, jatayu, kali, hanuman, krishna, ...). For place-led or ensemble videos use the character who carries the story, else the narrator-led subject.",
+      "free_text": true
+    },
+    "audio_type": {
+      "definition": "How the audio track carries the video.",
+      "values": {
+        "narration": "Voiceover is the main audio, with only incidental sound effects.",
+        "song": "A commercial/licensed song carries the video, no voiceover.",
+        "dialogue_plus_song": "Characters' speech or quoted lines over a song.",
+        "narration_plus_music": "Voiceover with a prominent score or music bed."
+      }
+    },
+    "song_genre": {
+      "definition": "Genre of the song if the video uses one.",
+      "values": {
+        "none": "No song.",
+        "rock": "Rock or metal.",
+        "rap": "Rap or hip hop.",
+        "bhakti": "Traditional devotional or bhajan style.",
+        "cinematic": "Orchestral or film-score style.",
+        "electronic": "EDM, trap-beats, synth-led.",
+        "folk": "Folk or regional acoustic style."
+      }
+    },
+    "opening_visual": {
+      "definition": "What the first frame / the YouTube thumbnail shows.",
+      "values": {
+        "face_closeup": "A character's face fills the frame.",
+        "wide_epic": "A wide landscape or scene with figures small in it.",
+        "text_card": "Title text or typography is the main element.",
+        "action": "A visible physical action, clash or motion moment.",
+        "map_or_diagram": "A map, route, diagram or archaeological photo."
+      }
+    },
+    "thumbnail_text": {
+      "definition": "Text burned into the thumbnail / first frame.",
+      "values": {
+        "none": "No text overlay.",
+        "short_text": "Up to about 4 words or a single line.",
+        "long_text": "More than about 4 words or several lines."
+      }
+    },
+    "cta": {
+      "definition": "Explicit call to action in the video's audio or on-screen text.",
+      "values": {
+        "none": "No call to action.",
+        "follow": "Asks viewers to follow/subscribe.",
+        "comment_prompt": "Asks a question or invites viewers to comment.",
+        "part_next": "Points to the next part or episode."
+      }
+    }
+  }
+}
