@@ -1,0 +1,341 @@
+{
+ "_note": "Config for pipeline/trends.py. queries rotate across days when there are more than max_searches (each search costs 100 quota units). Characters: key -> aliases (Latin matched on word boundaries, lowercase; Devanagari matched as whole words). non_story_terms: titles containing any of these (case-insensitive) are left out of the digest's Top-20 and competitor tables (not out of topic heat, which measures overall deity demand). Channel names are checked too, and titles with fewer than min_story_words words once hashtags/emoji are stripped count as non-story (status clips).",
+ "queries": [
+  "ramayana shorts",
+  "mahabharata shorts",
+  "hindu mythology shorts",
+  "krishna shorts",
+  "hanuman shorts",
+  "mahadev shorts",
+  "रामायण कथा",
+  "महाभारत",
+  "devi durga shorts",
+  "jatayu",
+  "ramayan ki kahani shorts",
+  "पौराणिक कथा shorts",
+  "mythology story hindi shorts"
+ ],
+ "max_searches_per_scan": 8,
+ "lookback_days": 14,
+ "suggestion_seeds": [
+  "ramayana",
+  "mahabharat",
+  "hanuman",
+  "krishna",
+  "mahadev",
+  "रामायण",
+  "महाभारत",
+  "हनुमान"
+ ],
+ "characters": {
+  "rama": [
+   "rama",
+   "ram",
+   "shri ram",
+   "shree ram",
+   "राम",
+   "श्रीराम",
+   "श्री राम"
+  ],
+  "sita": [
+   "sita",
+   "seeta",
+   "mata sita",
+   "सीता"
+  ],
+  "lakshmana": [
+   "lakshmana",
+   "lakshman",
+   "laxman",
+   "laxmana",
+   "लक्ष्मण"
+  ],
+  "hanuman": [
+   "hanuman",
+   "hanumanji",
+   "bajrangbali",
+   "bajrang bali",
+   "anjaneya",
+   "हनुमान",
+   "बजरंगबली",
+   "बजरंग बली"
+  ],
+  "ravana": [
+   "ravana",
+   "ravan",
+   "dashanan",
+   "रावण"
+  ],
+  "jatayu": [
+   "jatayu",
+   "jatayus",
+   "जटायु"
+  ],
+  "bharat": [
+   "bharat",
+   "bharata",
+   "भरत"
+  ],
+  "kaikeyi": [
+   "kaikeyi",
+   "kaikei",
+   "कैकेयी"
+  ],
+  "dasharatha": [
+   "dasharatha",
+   "dashrath",
+   "dasharath",
+   "दशरथ"
+  ],
+  "vibhishana": [
+   "vibhishana",
+   "vibhishan",
+   "विभीषण"
+  ],
+  "kumbhakarna": [
+   "kumbhakarna",
+   "kumbhkaran",
+   "कुंभकर्ण",
+   "कुम्भकर्ण"
+  ],
+  "indrajit": [
+   "indrajit",
+   "meghnad",
+   "meghnath",
+   "मेघनाद",
+   "इंद्रजीत"
+  ],
+  "sugriva": [
+   "sugriva",
+   "sugreev",
+   "सुग्रीव"
+  ],
+  "vali": [
+   "vali",
+   "bali vanar",
+   "बाली"
+  ],
+  "shabari": [
+   "shabari",
+   "sabari",
+   "शबरी"
+  ],
+  "ahilya": [
+   "ahilya",
+   "ahalya",
+   "अहिल्या"
+  ],
+  "krishna": [
+   "krishna",
+   "krishn",
+   "kanha",
+   "kanhaiya",
+   "govind",
+   "कृष्ण",
+   "कान्हा",
+   "कन्हैया",
+   "गोविंद"
+  ],
+  "radha": [
+   "radha",
+   "राधा"
+  ],
+  "arjuna": [
+   "arjuna",
+   "arjun",
+   "अर्जुन"
+  ],
+  "karna": [
+   "karna",
+   "karn",
+   "कर्ण"
+  ],
+  "bhishma": [
+   "bhishma",
+   "bhishm",
+   "भीष्म"
+  ],
+  "draupadi": [
+   "draupadi",
+   "द्रौपदी"
+  ],
+  "yudhishthira": [
+   "yudhishthira",
+   "yudhishthir",
+   "yudhisthir",
+   "युधिष्ठिर"
+  ],
+  "bhima": [
+   "bhima",
+   "bhim",
+   "भीम"
+  ],
+  "abhimanyu": [
+   "abhimanyu",
+   "अभिमन्यु"
+  ],
+  "duryodhana": [
+   "duryodhana",
+   "duryodhan",
+   "दुर्योधन"
+  ],
+  "ashwatthama": [
+   "ashwatthama",
+   "ashwathama",
+   "अश्वत्थामा"
+  ],
+  "drona": [
+   "drona",
+   "dronacharya",
+   "द्रोण",
+   "द्रोणाचार्य"
+  ],
+  "eklavya": [
+   "eklavya",
+   "एकलव्य"
+  ],
+  "kansa": [
+   "kansa",
+   "kans",
+   "कंस"
+  ],
+  "shiva": [
+   "shiva",
+   "shiv",
+   "mahadev",
+   "bholenath",
+   "shankar",
+   "शिव",
+   "महादेव",
+   "भोलेनाथ",
+   "शंकर"
+  ],
+  "parvati": [
+   "parvati",
+   "gauri",
+   "पार्वती",
+   "गौरी"
+  ],
+  "ganesha": [
+   "ganesha",
+   "ganesh",
+   "ganpati",
+   "गणेश",
+   "गणपति"
+  ],
+  "kartikeya": [
+   "kartikeya",
+   "kartikey",
+   "murugan",
+   "कार्तिकेय"
+  ],
+  "durga": [
+   "durga",
+   "maa durga",
+   "दुर्गा"
+  ],
+  "kali": [
+   "kali",
+   "maa kali",
+   "काली"
+  ],
+  "lakshmi": [
+   "lakshmi",
+   "laxmi",
+   "लक्ष्मी"
+  ],
+  "saraswati": [
+   "saraswati",
+   "सरस्वती"
+  ],
+  "vishnu": [
+   "vishnu",
+   "narayan",
+   "narayana",
+   "विष्णु",
+   "नारायण"
+  ],
+  "narasimha": [
+   "narasimha",
+   "narsimha",
+   "narasingh",
+   "नरसिंह",
+   "नृसिंह"
+  ],
+  "prahlad": [
+   "prahlad",
+   "prahlada",
+   "प्रह्लाद",
+   "प्रहलाद"
+  ],
+  "dhruva": [
+   "dhruva",
+   "dhruv",
+   "ध्रुव"
+  ],
+  "vamana": [
+   "vamana",
+   "vaman",
+   "वामन"
+  ],
+  "parashurama": [
+   "parashurama",
+   "parshuram",
+   "परशुराम"
+  ],
+  "shani": [
+   "shani",
+   "shanidev",
+   "शनि",
+   "शनिदेव"
+  ],
+  "markandeya": [
+   "markandeya",
+   "markandey",
+   "मार्कंडेय"
+  ],
+  "raktabija": [
+   "raktabija",
+   "raktbeej",
+   "रक्तबीज"
+  ],
+  "valmiki": [
+   "valmiki",
+   "वाल्मीकि",
+   "वाल्मिकी"
+  ]
+ },
+ "non_story_terms": [
+  "making",
+  "clay",
+  "idol",
+  "मूर्ति बना",
+  "status",
+  "bhajan",
+  "भजन",
+  "song",
+  "गीत",
+  "aarti",
+  "आरती",
+  "comedy",
+  "prank",
+  "drawing",
+  "art",
+  "rangoli",
+  "diy",
+  "craft",
+  "dance",
+  "cover",
+  "lyrics",
+  "tom&jerry",
+  "cute",
+  "whatsapp",
+  "funny",
+  "gameplay",
+  "podcast",
+  "chalisa",
+  "चालीसा",
+  "painting"
+ ],
+ "min_story_words": 4
+}
