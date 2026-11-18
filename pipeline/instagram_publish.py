@@ -262,9 +262,12 @@ def _prepare(ep: Path, video_name: str):
     return meta_path, meta, video, caption, size
 
 
-def publish_reel(ep: Path, video: str) -> dict:
+def publish_reel(ep: Path, video: str, on_container=None) -> dict:
     """Upload out/final/<video> as a Reel, wait for processing, publish, log published.instagram in episode.json.
-    Returns {"media_id", "permalink"}. Raises SystemExit on any failure (nothing is logged then)."""
+    Returns {"media_id", "permalink"}. Raises SystemExit on any failure before the post goes out.
+    on_container(container_id) is called as soon as the container exists (before the upload), so a caller can
+    remember it. The media id is written to episode.json the moment media_publish returns; a failing permalink
+    lookup afterwards does not raise (permalink is then None)."""
     ep = Path(ep)
     meta_path, meta, video_path, caption, size = _prepare(ep, video)
     s = load()
@@ -272,6 +275,8 @@ def publish_reel(ep: Path, video: str) -> dict:
     c = call("POST", f"{g}/{VERSION}/{uid}/media", {"media_type": "REELS", "upload_type": "resumable", "caption": caption,
                                                         "share_to_feed": "true", "access_token": tok})
     cid = c["id"]
+    if on_container:
+        on_container(cid)
     print(f"container {cid}; uploading…")
     # Upload to the `uri` Meta returns: its API version can differ from ours (v27.0 vs v26.0 → FILE_NOT_FOUND).
     call("POST", c.get("uri") or f"{RUPLOAD}/{VERSION}/{cid}", headers={"Authorization": f"OAuth {tok}", "offset": "0", "file_size": str(size)},
@@ -287,13 +292,26 @@ def publish_reel(ep: Path, video: str) -> dict:
     else:
         raise SystemExit("still processing after 15 min; container id saved below, publish later")
     pub = call("POST", f"{g}/{VERSION}/{uid}/media_publish", {"creation_id": cid, "access_token": tok})
-    info = call("GET", f"{g}/{VERSION}/{pub['id']}", {"fields": "permalink,media_product_type,timestamp", "access_token": tok})
-    meta.setdefault("published", {})["instagram"] = {"media_id": pub["id"], "permalink": info.get("permalink"),
-                                                     "type": info.get("media_product_type"), "at": info.get("timestamp"),
-                                                     "video": video_path.name}
+    ig = {"media_id": pub["id"], "video": video_path.name}
+    meta.setdefault("published", {})["instagram"] = ig            # saved at once: the post is already public
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n")
-    print(f"Published: {info.get('permalink')}")
-    return {"media_id": pub["id"], "permalink": info.get("permalink")}
+    permalink = None
+    try:
+        info = call("GET", f"{g}/{VERSION}/{pub['id']}", {"fields": "permalink,media_product_type,timestamp", "access_token": tok})
+        ig.update(permalink=info.get("permalink"), type=info.get("media_product_type"), at=info.get("timestamp"))
+        permalink = info.get("permalink")
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n")
+    except SystemExit as e:
+        print(f"posted (media {pub['id']}) but the permalink lookup failed: {e}")
+    print(f"Published: {permalink}")
+    return {"media_id": pub["id"], "permalink": permalink}
+
+
+def container_published(container_id: str) -> bool:
+    """True iff Instagram says this container was already published (used before any retry)."""
+    s = load()
+    st = call("GET", f"{base(s)}/{VERSION}/{container_id}", {"fields": "status_code", "access_token": s["access_token"]})
+    return st.get("status_code") == "PUBLISHED"
 
 
 def cmd_publish(a):

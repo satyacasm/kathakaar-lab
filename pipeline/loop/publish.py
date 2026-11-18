@@ -11,10 +11,12 @@ Only records in status `approved` with a slot are ever touched. For the due reco
   3. Instagram, ig_mode "manual" (popular songs): record goes to posted with ig_manual_pending=True and an INBOX
      decision tells Satyam which file, song and start time to use in the app.
 Approved records more than LATE_GRACE past their slot (and not yet public) move to the next free slot.
+Pending Instagram retries are handled first, then the record due now, in the same run. A non-blocking file lock makes a
+second concurrent run return "locked".
 --dry-run makes no network call and changes no state. --now takes an ISO time (naive = IST) for rehearsals.
 Standard library only.
 """
-import argparse, json, sys
+import argparse, contextlib, fcntl, json, sys
 from datetime import datetime
 from pathlib import Path
 
@@ -24,11 +26,25 @@ for _p in (str(HERE.parent), str(HERE)):
         sys.path.insert(0, _p)
 
 import inbox, instagram_publish, vqueue, youtube_publish
-from vqueue import LATE_GRACE, TZ, one_line
+from vqueue import TZ, one_line
 
 EPISODES = vqueue.LAB / "episodes"
+LOCKFILE = vqueue.LAB / "cache" / "loop" / "locks" / "publish.flock"
 API_VIDEO = "reel_with_song.mp4"
 MANUAL_VIDEO = "reel_SILENT.mp4"
+
+
+@contextlib.contextmanager
+def _run_lock():
+    """Non-blocking exclusive lock; yields False when another run holds it."""
+    Path(LOCKFILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCKFILE, "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
 
 
 def _fail(rec, reason):
@@ -49,18 +65,24 @@ def _precheck(rec, ep: Path):
         _read_meta(ep)
     except (OSError, ValueError) as e:
         return f"episode.json unreadable: {e}"
-    need = MANUAL_VIDEO if rec.get("ig_mode") == "manual" else API_VIDEO
-    if rec.get("ig_mode") not in ("api", "manual"):
+    if rec.get("ig_mode") == "manual":
+        if not (ep / "out/final" / MANUAL_VIDEO).exists():
+            return f"missing {ep / 'out/final' / MANUAL_VIDEO}"
+    elif rec.get("ig_mode") == "api":
+        try:
+            instagram_publish._prepare(ep, API_VIDEO)  # video, caption, size; "already on Instagram" is adopted later
+        except SystemExit as e:
+            if not str(e.code).startswith("already on Instagram"):
+                return str(e.code)
+    else:
         return f"unknown ig_mode {rec.get('ig_mode')!r}"
-    if not (ep / "out/final" / need).exists():
-        return f"missing {ep / 'out/final' / need}"
     return None
 
 
 def _log_youtube_public(ep: Path, yt_id: str, now: datetime):
     meta = _read_meta(ep)
-    meta.setdefault("published", {})["youtube"] = {
-        "id": yt_id, "url": f"https://youtube.com/shorts/{yt_id}", "privacy": "public", "public_at": now.isoformat()}
+    yt = meta.setdefault("published", {}).setdefault("youtube", {})
+    yt.update({"id": yt_id, "url": f"https://youtube.com/shorts/{yt_id}", "privacy": "public", "public_at": now.isoformat()})
     (ep / "episode.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n")
 
 
@@ -71,34 +93,8 @@ def _handoff_text(rec, ep: Path, meta: dict) -> str:
             f"song {song.get('title', '?')} from {start}, YouTube https://youtube.com/shorts/{rec['yt_id']}")
 
 
-def _pick(now):
-    """A record already public on YouTube still owing Instagram wins (retry at any time); else the due record."""
-    pending = [r for r in vqueue.load() if r["status"] == "approved" and r.get("yt_public") and r.get("slot")]
-    if pending:
-        return min(pending, key=lambda r: r["slot"])
-    return vqueue.due(now)
-
-
-def _move_late(now, say) -> int:
-    moved = 0
-    with vqueue._edit() as records:
-        for r in sorted(records, key=lambda r: r.get("slot") or ""):
-            if (r["status"] == "approved" and r.get("slot") and not r.get("yt_public")
-                    and datetime.fromisoformat(r["slot"]) < now - LATE_GRACE):
-                new = vqueue.next_free_slot(records, now)
-                say(f"late: {r['id']} slot {r['slot']} -> {new.isoformat()}")
-                r["slot"] = new.isoformat()
-                inbox.add(f"{r['id']} missed its slot by more than 2 h; moved to {new.strftime('%a %d %b %H:%M IST')}", "info")
-                moved += 1
-    return moved
-
-
-def run_slot(now: datetime, dry_run: bool = False, say=print) -> str:
-    now = now.astimezone(TZ)
-    moved = _move_late_dry(now, say) if dry_run else _move_late(now, say)
-    rec = _pick(now)
-    if rec is None:
-        return "moved" if moved else "nothing_due"
+def _process(rec, now: datetime, dry_run: bool, say) -> str:
+    """Publish one approved record (YouTube unless already public, then Instagram)."""
     ep = EPISODES / rec["id"]
     problem = _precheck(rec, ep)
     if problem:
@@ -111,16 +107,17 @@ def run_slot(now: datetime, dry_run: bool = False, say=print) -> str:
             (f"publish {API_VIDEO} to Instagram via the API" if api else
              f"hand off to Satyam: {_handoff_text(rec, ep, _read_meta(ep))}"))
         return "posted" if api else "handed_off"
-    now_iso = now.isoformat()
     if not rec.get("yt_public"):
         try:
             youtube_publish.set_privacy(rec["yt_id"], "public")
         except Exception as e:  # nothing became public
+            if getattr(e, "code", None) == 404:
+                return _fail(rec, "private preview missing on YouTube (404)")
             if rec.get("yt_retry"):
                 return _fail(rec, f"YouTube switch failed twice: {e}")
             vqueue.update(rec["id"], yt_retry=1)
             inbox.add(f"YouTube switch failed for {rec['id']}, will retry once: {one_line(e)}", "failure")
-            return "failed"
+            return "yt_retry_pending"
         vqueue.update(rec["id"], yt_public=True)
         try:
             _log_youtube_public(ep, rec["yt_id"], now)
@@ -128,12 +125,19 @@ def run_slot(now: datetime, dry_run: bool = False, say=print) -> str:
             inbox.add(f"{rec['id']} is public on YouTube but episode.json was not updated: {one_line(e)}", "failure")
     if not api:
         meta = _read_meta(ep)
-        vqueue.transition(rec["id"], "posted", posted_at=now_iso, ig_manual_pending=True)
-        inbox.add(_handoff_text(rec, ep, meta), "decision")
+        inbox.add(_handoff_text(rec, ep, meta), "decision")  # tell Satyam first; the record follows
+        vqueue.transition(rec["id"], "posted", posted_at=now.isoformat(), ig_manual_pending=True)
         return "handed_off"
     already = (_read_meta(ep).get("published") or {}).get("instagram")
     try:
-        res = {"media_id": already["media_id"]} if already else instagram_publish.publish_reel(ep, API_VIDEO)
+        if already:
+            res = {"media_id": already["media_id"]}
+        elif rec.get("ig_container") and instagram_publish.container_published(rec["ig_container"]):
+            inbox.add(f"{rec['id']}: Instagram reports the earlier upload as published; check the post and its link", "info")
+            res = {"media_id": None}
+        else:
+            res = instagram_publish.publish_reel(
+                ep, API_VIDEO, on_container=lambda cid: vqueue.update(rec["id"], ig_container=cid))
     except (Exception, SystemExit) as e:
         msg = one_line(e.code if isinstance(e, SystemExit) else e)
         if rec.get("ig_retry"):
@@ -141,18 +145,51 @@ def run_slot(now: datetime, dry_run: bool = False, say=print) -> str:
         vqueue.update(rec["id"], ig_retry=1)
         inbox.add(f"Instagram post failed for {rec['id']} (YouTube is public); retrying at the next slot: {msg}", "info")
         return "ig_retry_pending"
-    vqueue.transition(rec["id"], "posted", posted_at=now_iso, ig_media_id=res["media_id"])
+    vqueue.transition(rec["id"], "posted", posted_at=now.isoformat(), ig_media_id=res["media_id"])
     return "posted"
 
 
-def _move_late_dry(now, say) -> int:
-    n = 0
-    for r in vqueue.load():
-        if (r["status"] == "approved" and r.get("slot") and not r.get("yt_public")
-                and datetime.fromisoformat(r["slot"]) < now - LATE_GRACE):
-            say(f"late: {r['id']} slot {r['slot']} would move to {vqueue.next_free_slot(vqueue.load(), now).isoformat()}")
-            n += 1
-    return n
+def _pending_ig():
+    """Approved records already public on YouTube that still owe Instagram (never touch YouTube again)."""
+    return sorted((r for r in vqueue.load() if r["status"] == "approved" and r.get("yt_public") and r.get("slot")),
+                  key=lambda r: r["slot"])
+
+
+def _run(now: datetime, dry_run: bool, say) -> str:
+    if dry_run:
+        moved = []
+        for r in vqueue.load():
+            if (r["status"] == "approved" and r.get("slot") and not r.get("yt_public")
+                    and datetime.fromisoformat(r["slot"]) < now - vqueue.LATE_GRACE):
+                moved.append(r["id"])
+                say(f"late: {r['id']} slot {r['slot']} would move to the next free slot")
+    else:
+        moved = vqueue.move_late(now)
+        for rid, _old, new in moved:  # after the queue lock is released
+            say(f"late: {rid} -> {new}")
+            inbox.add(f"{rid} missed its slot by more than 2 h; moved to "
+                      f"{datetime.fromisoformat(new).strftime('%a %d %b %H:%M IST')}", "info")
+    results, handled = [], set()
+    for rec in _pending_ig():
+        handled.add(rec["id"])
+        results.append(_process(rec, now, dry_run, say))
+    due = vqueue.due(now)
+    if due and due["id"] not in handled:
+        return _process(due, now, dry_run, say)
+    if results:
+        return results[0]
+    return "moved" if moved else "nothing_due"
+
+
+def run_slot(now: datetime, dry_run: bool = False, say=print) -> str:
+    now = now.astimezone(TZ)
+    if dry_run:
+        return _run(now, True, say)
+    with _run_lock() as got:
+        if not got:
+            say("another publish run holds the lock; skipping")
+            return "locked"
+        return _run(now, False, say)
 
 
 def main(argv=None):

@@ -160,6 +160,20 @@ def next_free_slot(records: list[dict], now: datetime) -> datetime:
         day += timedelta(days=1)
 
 
+def move_late(now: datetime) -> list[tuple[str, str, str]]:
+    """Approved, not-yet-public records more than LATE_GRACE past their slot move to the next free slot.
+    Returns [(id, old_slot, new_slot)]."""
+    moved = []
+    with _edit() as records:
+        for r in sorted(records, key=lambda r: r.get("slot") or ""):
+            if (r["status"] == "approved" and r.get("slot") and not r.get("yt_public")
+                    and datetime.fromisoformat(r["slot"]) < now - LATE_GRACE):
+                new = next_free_slot(records, now).isoformat()
+                moved.append((r["id"], r["slot"], new))
+                r["slot"] = new
+    return moved
+
+
 def approve(ids: list[str], now: datetime, exists: Callable[[str], bool]) -> list[dict]:
     """All-or-nothing: every id must be preview_ready with a still-existing private preview."""
     with _edit() as records:
