@@ -218,6 +218,7 @@ def curve_for(con, snap_id: int) -> list[tuple[float, float, float | None]]:
 # ---------------------------------------------------------------- scoreboard
 IST = ZoneInfo("Asia/Kolkata")
 PLATFORMS = ("youtube", "instagram")
+MIN_DAYS = 5          # distinct days of data a YouTube views window needs to count
 
 
 def _pct(delta, base):
@@ -233,6 +234,8 @@ def week_over_week(rows: list[tuple[str, str, int]], today: date) -> dict[str, d
         cur = [c for d, c in mine if d <= today]
         old = [c for d, c in mine if today - timedelta(days=10) <= d <= today - timedelta(days=7)]
         now, ago = (cur[-1] if cur else None), (old[-1] if old else None)
+        if not any(d >= today - timedelta(days=2) for d, c in mine if d <= today):
+            ago = None                                   # stale latest pull: no honest week-over-week
         delta = now - ago if now is not None and ago is not None else None
         out[pl] = {"now": now, "week_ago": ago, "delta": delta, "pct": _pct(delta, ago)}
     return out
@@ -254,15 +257,18 @@ def _ig_window_views(con, start: date, end: date):
             continue                                     # did not exist yet (or undated)
 
         def at(b):
-            r = con.execute("SELECT views FROM ig_snapshots WHERE media_id=? AND has_data=1 AND views IS NOT NULL "
-                            "AND day_ist<=? ORDER BY day_ist DESC, id DESC LIMIT 1", (m["media_id"], b.isoformat())).fetchone()
-            return r["views"] if r else None
+            r = con.execute("SELECT id, day_ist, views FROM ig_snapshots WHERE media_id=? AND has_data=1 "
+                            "AND views IS NOT NULL AND day_ist<=? ORDER BY day_ist DESC, id DESC LIMIT 1",
+                            (m["media_id"], b.isoformat())).fetchone()
+            return r
         hi = at(end)
         lo = 0 if pub > start.isoformat() else at(start)
-        if hi is None or lo is None:
+        stale = hi is not None and hi["day_ist"] < (end - timedelta(days=2)).isoformat()
+        same = hi is not None and lo != 0 and lo is not None and hi["id"] == lo["id"]
+        if hi is None or lo is None or stale or same:
             excluded += 1
             continue
-        total += max(hi - lo, 0)
+        total += max(hi["views"] - (lo if lo == 0 else lo["views"]), 0)
         used += 1
     return (total if used else None), excluded
 
@@ -271,12 +277,16 @@ def views_wow(con, today: date) -> dict[str, dict]:
     """Views in the last 7 days (today-6..today) vs the 7 before. YouTube sums the `daily` series; Instagram has no
     daily series, so it differences snapshot totals at the week boundaries (approx True)."""
     def yt_sum(a: date, b: date):
-        r = con.execute("SELECT SUM(views) s, COUNT(*) n FROM daily WHERE day>=? AND day<=? AND views IS NOT NULL",
-                        (a.isoformat(), b.isoformat())).fetchone()
-        return r["s"] if r["n"] else None
-    now, prev = yt_sum(today - timedelta(days=6), today), yt_sum(today - timedelta(days=13), today - timedelta(days=7))
+        r = con.execute("SELECT SUM(views) s, COUNT(DISTINCT day) n FROM daily WHERE day>=? AND day<=? "
+                        "AND views IS NOT NULL", (a.isoformat(), b.isoformat())).fetchone()
+        return (r["s"] if r["n"] >= MIN_DAYS else None), r["n"]
+    # Analytics lags 1-2 days: windows end at today-2; each needs MIN_DAYS distinct days of data or it is unknown
+    w1 = (today - timedelta(days=8), today - timedelta(days=2))
+    w0 = (today - timedelta(days=15), today - timedelta(days=9))
+    (now, n1), (prev, n0) = yt_sum(*w1), yt_sum(*w0)
     d, p = _window(now, prev)
-    out = {"youtube": {"now": now, "prev": prev, "delta": d, "pct": p, "approx": False, "excluded": 0}}
+    out = {"youtube": {"now": now, "prev": prev, "delta": d, "pct": p, "approx": False, "excluded": 0,
+                       "windows": (w1, w0), "days": (n1, n0)}}
     b0, b1, b2 = today - timedelta(days=14), today - timedelta(days=7), today
     now, ex1 = _ig_window_views(con, b1, b2)
     prev, ex2 = _ig_window_views(con, b0, b1)
@@ -309,8 +319,10 @@ def cell_table(con, records=None, rows=None, scores=None) -> list[dict]:
         cells.setdefault((c.get("format", "-"), c.get("audio", "-"), slot), []).append((scores[row["video_id"]], row))
     out = []
     for (fmt, audio, slot), items in sorted(cells.items()):
-        views = sum(num(r.get("an_views")) or 0 for _, r in items)
-        subs = sum(num(r.get("subs_gained")) or 0 for _, r in items)
+        both = [(num(r.get("an_views")), num(r.get("subs_gained"))) for _, r in items]
+        both = [(v, sb) for v, sb in both if v is not None and sb is not None]   # NULL subs is not zero subs
+        views = sum(v for v, _ in both)
+        subs = sum(sb for _, sb in both)
         out.append({"format": fmt, "audio": audio, "slot": slot, "n": len(items),
                     "median_score": statistics.median(s for s, _ in items),
                     "followers_per_1k": round(subs / views * 1000, 2) if views else None})
@@ -326,7 +338,9 @@ def sec_scoreboard(out, con, today: date):
     vw = views_wow(con, today)
     sg = lambda x: "-" if x is None else f"{x:+d}"  # noqa: E731
     pc = lambda x: "-" if x is None else f"{x:+.1f}%"  # noqa: E731
-    out.append("| platform | followers now | week ago | change | % | views last 7d | views prior 7d | change | % |")
+    (a1, b1), (a0, b0) = vw["youtube"]["windows"]
+    out.append(f"Views windows (IST): this week {a1} to {b1}, prior week {a0} to {b0} (YouTube analytics lags 1-2 days).\n")
+    out.append("| platform | followers now | week ago | change | % | views this week | views prior week | change | % |")
     out.append("|---|---|---|---|---|---|---|---|---|")
     for pl in PLATFORMS:
         w = wow.get(pl, {"now": None, "week_ago": None, "delta": None, "pct": None})
@@ -336,7 +350,11 @@ def sec_scoreboard(out, con, today: date):
                    f"{f(v['now'], 0)}{star} | {f(v['prev'], 0)}{star} | {sg(v['delta'])} | {pc(v['pct'])} |")
     out.append("")
     out.append("`-` = no data (never a guess). Follower rows come from daily snapshots, so a week-ago reading appears "
-               "once a week of history exists. YouTube views are the sum of the daily analytics series (it lags 1-2 days).")
+               "once a week of history exists. YouTube views are the sum of the daily analytics series.")
+    n1, n0 = vw["youtube"]["days"]
+    if vw["youtube"]["now"] is None or vw["youtube"]["prev"] is None:
+        out.append(f"YouTube views week over week not shown: a window needs {MIN_DAYS}+ days of data "
+                   f"(this week has {n1}, prior week has {n0}).")
     if vw["instagram"]["approx"]:
         ex = vw["instagram"]["excluded"]
         out.append("\\* Instagram has no daily views series: views are the difference between per-Reel snapshot totals at "
