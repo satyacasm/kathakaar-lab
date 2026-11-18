@@ -272,7 +272,8 @@ def cmd_publish(a):
                                                         "share_to_feed": "true", "access_token": tok})
     cid = c["id"]
     print(f"container {cid}; uploading…")
-    call("POST", f"{RUPLOAD}/{VERSION}/{cid}", headers={"Authorization": f"OAuth {tok}", "offset": "0", "file_size": str(size)},
+    # Upload to the `uri` Meta returns: its API version can differ from ours (v27.0 vs v26.0 → FILE_NOT_FOUND).
+    call("POST", c.get("uri") or f"{RUPLOAD}/{VERSION}/{cid}", headers={"Authorization": f"OAuth {tok}", "offset": "0", "file_size": str(size)},
          body=video.read_bytes())
     for _ in range(90):                       # up to ~15 min of processing
         st = call("GET", f"{g}/{VERSION}/{cid}", {"fields": "status_code,status", "access_token": tok})
