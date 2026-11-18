@@ -95,3 +95,36 @@ class TestPlanStatus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOverrideGuard(unittest.TestCase):
+    def test_override_refused_in_review_job(self):
+        os.environ["LOOP_JOB"] = "review"
+        self.addCleanup(os.environ.pop, "LOOP_JOB", None)
+        with self.assertRaises(SystemExit) as c, contextlib.redirect_stderr(io.StringIO()):
+            features.cmd_set(argparse.Namespace(override=True, video_id="v", pairs=["a=b"]))
+        self.assertIn("--override", str(c.exception.code))
+
+    def test_override_not_blocked_without_env(self):
+        os.environ.pop("LOOP_JOB", None)
+        # passes the guard, then fails later on the unknown video / pairs: anything but the guard's message
+        try:
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                features.cmd_set(argparse.Namespace(override=True, video_id="nope", pairs=[]))
+        except BaseException as e:  # noqa: BLE001
+            self.assertNotIn("refused inside the review job", str(getattr(e, "code", e)))
+
+    def test_abbreviated_flags_error(self):
+        for argv in (["--pa", "x", "show"],):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                plan.main(argv)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            plan.main(["next-week", "--sta", "2026-01-01"])
+        for mod in (features, review):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                old = sys.argv
+                sys.argv = ["x", "set", "v", "a=b", "--overr"] if mod is features else ["x", "pack", "--ou", "y"]
+                try:
+                    mod.main()
+                finally:
+                    sys.argv = old

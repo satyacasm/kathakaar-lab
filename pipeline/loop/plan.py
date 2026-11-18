@@ -369,8 +369,14 @@ def _keep_before(path, start: date) -> list:
     return [r for r in read(path) if r["day"] < start.isoformat()]
 
 
+class _StrictParser(argparse.ArgumentParser):
+    """No flag abbreviations (--ou, --cs, --pa), including in sub-commands."""
+    def __init__(self, *a, **k):
+        k.setdefault("allow_abbrev", False)
+        super().__init__(*a, **k)
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="plan.py")
+    ap = _StrictParser(prog="plan.py")
     ap.add_argument("--path", default=os.environ.get("PLAN_PATH") or str(PLAN_PATH))
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("new-fortnight", "next-week"):

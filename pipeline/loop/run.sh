@@ -89,7 +89,7 @@ job_review() {
   local facts
   facts="$(printf '\n## This run\n- Today: %s\n- Newest pack: %s\n- Newest trends digest: %s\n' \
     "$today" "${pack#"$LAB"/}" "${trends#"$LAB"/}")"
-  perl -e 'alarm shift; exec @ARGV' 1800 \
+  LOOP_JOB=review perl -e 'alarm shift; exec @ARGV' 1800 \
     claude -p "$(cat "$prompt_file")$facts" \
       --model claude-sonnet-5-5 \
       --permission-mode dontAsk \
@@ -104,7 +104,6 @@ job_review() {
         "Bash(python3 pipeline/analytics.py ig map*)" \
         "Bash(python3 pipeline/analytics.py ig status*)" \
         "Bash(python3 pipeline/review.py pack*)" \
-        "Bash(python3 pipeline/trends.py digest*)" \
         "Bash(python3 pipeline/loop/inbox.py *)" \
         "Bash(python3 pipeline/loop/plan.py status*)" "Bash(python3 pipeline/loop/plan.py show*)" \
         "Bash(python3 pipeline/loop/plan.py next-week*)" "Bash(python3 pipeline/loop/plan.py new-fortnight*)" \
@@ -113,7 +112,7 @@ job_review() {
         "Edit(ideas/**)" \
       --disallowedTools "WebFetch" "WebSearch" "Bash(git *)" "Bash(rm *)" "Bash(sqlite3 *)" "Bash(curl *)" \
         "Read(secrets/**)" "Read(/$LAB/secrets/**)" "Read(~/.ssh/**)" "Read(~/.config/**)" "Read(~/.aws/**)" \
-        "Bash(python3 pipeline/features.py set * --override*)" "Bash(*--out*)" "Bash(*--csv*)" "Bash(*--path*)" \
+        "Bash(python3 pipeline/features.py set * --override*)" "Bash(*features.py set*--o*)" "Bash(*--out*)" "Bash(*--csv*)" "Bash(*--path*)" \
       --strict-mcp-config \
       --no-session-persistence \
       --output-format text < /dev/null

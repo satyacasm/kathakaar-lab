@@ -452,6 +452,12 @@ def our_coverage(pats) -> tuple[dict[str, list[str]], dict[str, float]]:
     return cover, scores
 
 
+class _StrictParser(argparse.ArgumentParser):
+    """No flag abbreviations (--ou, --cs, --pa), including in sub-commands."""
+    def __init__(self, *a, **k):
+        k.setdefault("allow_abbrev", False)
+        super().__init__(*a, **k)
+
 def cmd_digest(a):
     dest = _confine(a.out, IDEAS) if a.out else None   # refuse before any work
     con = db()
@@ -615,7 +621,7 @@ def cmd_status(_):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = _StrictParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("scan")
     s.add_argument("--force", action="store_true")

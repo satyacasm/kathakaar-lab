@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -342,7 +343,15 @@ def validate(vocab: dict, field: str, value: str) -> str:
     return value
 
 
+class _StrictParser(argparse.ArgumentParser):
+    """No flag abbreviations (--ou, --cs, --pa), including in sub-commands."""
+    def __init__(self, *a, **k):
+        k.setdefault("allow_abbrev", False)
+        super().__init__(*a, **k)
+
 def cmd_set(a) -> None:
+    if a.override and os.environ.get("LOOP_JOB") == "review":
+        sys.exit("error: --override is for the human; refused inside the review job (LOOP_JOB=review)")
     vocab = load_vocab()
     pairs: dict[str, str] = {}
     for item in a.pairs:
@@ -471,7 +480,7 @@ def cmd_table(a) -> None:
 
 # ---------------------------------------------------------------- main
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = _StrictParser(description=__doc__.splitlines()[0])
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("auto"); p.add_argument("--video"); p.set_defaults(fn=cmd_auto)  # noqa: E702
     p = sp.add_parser("context"); p.add_argument("video_id"); p.set_defaults(fn=cmd_context)  # noqa: E702

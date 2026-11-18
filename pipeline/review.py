@@ -652,6 +652,12 @@ def sec_ig_comments(out, con, since, ours):
 
 
 # ---------------------------------------------------------------- command
+class _StrictParser(argparse.ArgumentParser):
+    """No flag abbreviations (--ou, --cs, --pa), including in sub-commands."""
+    def __init__(self, *a, **k):
+        k.setdefault("allow_abbrev", False)
+        super().__init__(*a, **k)
+
 def cmd_pack(a) -> None:
     dest = _confine(a.out, REVIEW_DIR) if a.out else None   # refuse a stray --out before any work
     if not DB.exists():
@@ -692,7 +698,7 @@ def cmd_pack(a) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = _StrictParser(description=__doc__.splitlines()[0])
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("pack", help="write the review pack markdown")
     p.add_argument("--since", help="YYYY-MM-DD; default = time of the last pack")
