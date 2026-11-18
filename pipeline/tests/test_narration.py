@@ -1,5 +1,6 @@
 import json, os, subprocess, sys, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PIPELINE = os.path.dirname(HERE)
@@ -9,17 +10,9 @@ for p in (PIPELINE, os.path.join(PIPELINE, "loop")):
 
 import narration
 
-# shots.validate lazily imports reel modules that need cv2/numpy (reel venv only); the song checks
-# never use them, so stub whatever is missing.
-from unittest import mock
-for _m in ("cv2", "numpy", "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont", "PIL.ImageFilter"):
-    try:
-        __import__(_m)
-    except ImportError:
-        sys.modules[_m] = mock.MagicMock()
 from reel import shots
 
-FFMPEG = "/opt/homebrew/bin/ffmpeg"
+FFMPEG = narration.FFMPEG
 
 
 def sine(path, dur, freq=440):
@@ -46,13 +39,24 @@ def make_episode(root, lines=((0.5, 3.0, 4.0), (4.5, 10.0, 0.0)), take_len=None)
         {"en": [f"English {i}" for i in range(1, len(lines) + 1)], "hi": [f"hindi {i}" for i in range(1, len(lines) + 1)]}))
     (ep / "script/edit.json").write_text(json.dumps({
         "song": "audio/song.wav", "song_in": 0.0, "song_out": 60.0, "fade_out": 1.6,
-        "size": [1080, 1920], "fps": 30, "layout": "full", "bars": [0.0, 2.5],
+        "size": [1080, 1920], "fps": 30, "layout": "full", "bars": [0.0, 5.0, 10.5],
         "shots": [{"n": 1, "clip": "out/clips/c01.mp4", "from_bar": 0, "to_bar": 1, "in": 0.0}],
         "captions": [], "transitions": [], "grade": {}}))
     (ep / "script/shots.json").write_text(json.dumps({"style": "watercolor_ink", "characters": {}, "shots": [
         {"n": 1, "prompt": "", "characters": [], "seed": 101, "source": "local",
          "motion": {"type": "drift"}, "fx": []}]}))
     return ep
+
+
+def _stubs():
+    """shots.validate lazily imports reel modules needing cv2/numpy/PIL (reel venv only); stub the missing ones."""
+    stubs = {}
+    for m in ("cv2", "numpy", "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont", "PIL.ImageFilter"):
+        try:
+            __import__(m)
+        except ImportError:
+            stubs[m] = mock.MagicMock()
+    return mock.patch.dict(sys.modules, stubs)
 
 
 class TestNarration(unittest.TestCase):
@@ -90,20 +94,44 @@ class TestNarration(unittest.TestCase):
         self.assertAlmostEqual(edit["song_out"], 11.5, delta=0.05)
         self.assertLessEqual(edit["bars"][-1], edit["song_out"])
         self.assertEqual(len(edit["captions"]), 2)
-        rep = shots.validate(ep)
+        with _stubs():
+            rep = shots.validate(ep)
         self.assertEqual([e for e in rep.errors + rep.warnings if "song" in e], [])
 
-    def test_wire_edit_clamps_long_bars(self):
-        ep = make_episode(self.tmp.name)
-        narration.build_mix(ep, None)
+    def _set_bars(self, ep, bars):
         p = ep / "script/edit.json"
         e = json.loads(p.read_text())
-        e["bars"] = [0.0, 5.0, 20.0]
+        e["bars"] = bars
         p.write_text(json.dumps(e))
-        narration.wire_edit(ep)
-        e = json.loads(p.read_text())
-        self.assertLessEqual(e["bars"][-1], e["song_out"])
-        self.assertGreater(e["bars"][-1], e["bars"][-2])
+        return p
+
+    def test_wire_edit_rejects_short_bars_and_leaves_edit_unchanged(self):
+        ep = make_episode(self.tmp.name)
+        narration.build_mix(ep, None)
+        p = self._set_bars(ep, [0.0, 2.5])
+        before = p.read_text()
+        with self.assertRaises(narration.NarrationError) as cm:
+            narration.wire_edit(ep)
+        self.assertIn("author bars/shots", str(cm.exception))
+        self.assertEqual(p.read_text(), before)
+
+    def test_wire_edit_rejects_long_bars(self):
+        ep = make_episode(self.tmp.name)
+        narration.build_mix(ep, None)
+        p = self._set_bars(ep, [0.0, 5.0, 20.0])
+        before = p.read_text()
+        with self.assertRaises(narration.NarrationError):
+            narration.wire_edit(ep)
+        self.assertEqual(p.read_text(), before)
+
+    def test_wire_edit_accepts_bars_within_window(self):
+        ep = make_episode(self.tmp.name)
+        narration.build_mix(ep, None)
+        for last in (9.95, 11.5):  # mix is ~11.5: window is [dur-1.6, dur]
+            self._set_bars(ep, [0.0, 5.0, last])
+            narration.wire_edit(ep)
+            e = json.loads((ep / "script/edit.json").read_text())
+            self.assertEqual(e["bars"][-1], last)
 
 
 if __name__ == "__main__":

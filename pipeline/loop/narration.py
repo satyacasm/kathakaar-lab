@@ -26,6 +26,10 @@ FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 FFPROBE = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
 
 
+class NarrationError(Exception):
+    pass
+
+
 def _json(path: Path):
     return json.loads(Path(path).read_text())
 
@@ -105,10 +109,9 @@ def wire_edit(ep: Path) -> None:
     edit["song_out"] = dur
     edit["captions"] = captions_from_timing(ep, "en")
     bars = edit.get("bars") or [0.0]
-    if bars[-1] > dur:
-        bars = [b for b in bars if b < dur]
-        bars.append(dur)
-    edit["bars"] = bars
+    if bars[-1] < dur - (TAIL + 0.1) or bars[-1] > dur:
+        raise NarrationError(f"bars end at {bars[-1]} s but the narration mix is {dur} s: "
+                             "author bars/shots to cover it")
     path.write_text(json.dumps(edit, indent=1, ensure_ascii=False) + "\n")
 
 
@@ -124,7 +127,11 @@ def main(argv=None) -> int:
     if a.cmd == "mix":
         print(build_mix(a.ep, a.bed))
     else:
-        wire_edit(a.ep)
+        try:
+            wire_edit(a.ep)
+        except NarrationError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
     return 0
 
 
