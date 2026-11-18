@@ -34,7 +34,8 @@ import math
 import sqlite3
 import statistics
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -214,13 +215,153 @@ def curve_for(con, snap_id: int) -> list[tuple[float, float, float | None]]:
         "AND audience_watch_ratio IS NOT NULL ORDER BY elapsed_ratio", (snap_id,))]
 
 
+# ---------------------------------------------------------------- scoreboard
+IST = ZoneInfo("Asia/Kolkata")
+PLATFORMS = ("youtube", "instagram")
+
+
+def _pct(delta, base):
+    return round(delta / base * 100, 1) if delta is not None and base else None
+
+
+def week_over_week(rows: list[tuple[str, str, int]], today: date) -> dict[str, dict]:
+    """rows = (day 'YYYY-MM-DD', platform, count). Per platform: now = latest row up to today; week_ago = latest row
+    from today-10 to today-7 (older data is not a week-ago reading). Missing week_ago -> delta/pct None."""
+    out = {}
+    for pl in sorted({r[1] for r in rows}):
+        mine = sorted((date.fromisoformat(d), c) for d, p, c in rows if p == pl)
+        cur = [c for d, c in mine if d <= today]
+        old = [c for d, c in mine if today - timedelta(days=10) <= d <= today - timedelta(days=7)]
+        now, ago = (cur[-1] if cur else None), (old[-1] if old else None)
+        delta = now - ago if now is not None and ago is not None else None
+        out[pl] = {"now": now, "week_ago": ago, "delta": delta, "pct": _pct(delta, ago)}
+    return out
+
+
+def _window(a, b):
+    """(delta, pct) of window sums, None when either side is unknown."""
+    d = a - b if a is not None and b is not None else None
+    return d, _pct(d, b)
+
+
+def _ig_window_views(con, start: date, end: date):
+    """Views gained in (start, end] from snapshot totals at the two boundaries, per Reel. A Reel with no snapshot at or
+    before `start` that existed before it has an unknown baseline and is left out; returns (sum | None, excluded)."""
+    total, used, excluded = 0, 0, 0
+    for m in con.execute("SELECT media_id, timestamp FROM ig_media WHERE media_product_type='REELS'").fetchall():
+        pub = (m["timestamp"] or "")[:10]
+        if not pub or pub > end.isoformat():
+            continue                                     # did not exist yet (or undated)
+
+        def at(b):
+            r = con.execute("SELECT views FROM ig_snapshots WHERE media_id=? AND has_data=1 AND views IS NOT NULL "
+                            "AND day_ist<=? ORDER BY day_ist DESC, id DESC LIMIT 1", (m["media_id"], b.isoformat())).fetchone()
+            return r["views"] if r else None
+        hi = at(end)
+        lo = 0 if pub > start.isoformat() else at(start)
+        if hi is None or lo is None:
+            excluded += 1
+            continue
+        total += max(hi - lo, 0)
+        used += 1
+    return (total if used else None), excluded
+
+
+def views_wow(con, today: date) -> dict[str, dict]:
+    """Views in the last 7 days (today-6..today) vs the 7 before. YouTube sums the `daily` series; Instagram has no
+    daily series, so it differences snapshot totals at the week boundaries (approx True)."""
+    def yt_sum(a: date, b: date):
+        r = con.execute("SELECT SUM(views) s, COUNT(*) n FROM daily WHERE day>=? AND day<=? AND views IS NOT NULL",
+                        (a.isoformat(), b.isoformat())).fetchone()
+        return r["s"] if r["n"] else None
+    now, prev = yt_sum(today - timedelta(days=6), today), yt_sum(today - timedelta(days=13), today - timedelta(days=7))
+    d, p = _window(now, prev)
+    out = {"youtube": {"now": now, "prev": prev, "delta": d, "pct": p, "approx": False, "excluded": 0}}
+    b0, b1, b2 = today - timedelta(days=14), today - timedelta(days=7), today
+    now, ex1 = _ig_window_views(con, b1, b2)
+    prev, ex2 = _ig_window_views(con, b0, b1)
+    d, p = _window(now, prev)
+    out["instagram"] = {"now": now, "prev": prev, "delta": d, "pct": p, "approx": True, "excluded": max(ex1, ex2)}
+    return out
+
+
+def cell_table(con, records=None, rows=None, scores=None) -> list[dict]:
+    """Loop videos grouped by format x audio x slot: n, median score, followers gained per 1,000 views (YouTube
+    subs_gained / an_views from the features table; Instagram gives no per-video follower gain). Joined by episode
+    slug. Only posted videos with a features row count."""
+    if records is None:
+        sys.path.insert(0, str(LAB / "pipeline" / "loop"))
+        import vqueue
+        records = vqueue.load()
+    if rows is None:
+        rows = load_rows()
+    if scores is None:
+        scores = score_all(rows)[0]
+    by_slug = {r["episode_slug"]: r for r in rows}
+    cells: dict[tuple, list] = {}
+    for rec in records:
+        row = by_slug.get(rec["id"])
+        if rec.get("status") != "posted" or row is None or row["video_id"] not in scores:
+            continue
+        c = rec.get("cell") or {}
+        slot = (datetime.fromisoformat(rec["slot"]).astimezone(IST).strftime("%H:%M") if rec.get("slot")
+                else c.get("slot_pref") or "-")
+        cells.setdefault((c.get("format", "-"), c.get("audio", "-"), slot), []).append((scores[row["video_id"]], row))
+    out = []
+    for (fmt, audio, slot), items in sorted(cells.items()):
+        views = sum(num(r.get("an_views")) or 0 for _, r in items)
+        subs = sum(num(r.get("subs_gained")) or 0 for _, r in items)
+        out.append({"format": fmt, "audio": audio, "slot": slot, "n": len(items),
+                    "median_score": statistics.median(s for s, _ in items),
+                    "followers_per_1k": round(subs / views * 1000, 2) if views else None})
+    return out
+
+
+def sec_scoreboard(out, con, today: date):
+    out.append("## 0. Scoreboard\n")
+    out.append("Success measure: follower growth and views going up week over week.\n")
+    has = bool(con.execute("SELECT 1 FROM sqlite_master WHERE name='followers'").fetchone())
+    frows = [(r["day"], r["platform"], r["count"]) for r in con.execute("SELECT day, platform, count FROM followers")] if has else []
+    wow = week_over_week(frows, today)
+    vw = views_wow(con, today)
+    sg = lambda x: "-" if x is None else f"{x:+d}"  # noqa: E731
+    pc = lambda x: "-" if x is None else f"{x:+.1f}%"  # noqa: E731
+    out.append("| platform | followers now | week ago | change | % | views last 7d | views prior 7d | change | % |")
+    out.append("|---|---|---|---|---|---|---|---|---|")
+    for pl in PLATFORMS:
+        w = wow.get(pl, {"now": None, "week_ago": None, "delta": None, "pct": None})
+        v = vw[pl]
+        star = "*" if v["approx"] else ""
+        out.append(f"| {pl} | {f(w['now'], 0)} | {f(w['week_ago'], 0)} | {sg(w['delta'])} | {pc(w['pct'])} | "
+                   f"{f(v['now'], 0)}{star} | {f(v['prev'], 0)}{star} | {sg(v['delta'])} | {pc(v['pct'])} |")
+    out.append("")
+    out.append("`-` = no data (never a guess). Follower rows come from daily snapshots, so a week-ago reading appears "
+               "once a week of history exists. YouTube views are the sum of the daily analytics series (it lags 1-2 days).")
+    if vw["instagram"]["approx"]:
+        ex = vw["instagram"]["excluded"]
+        out.append("\\* Instagram has no daily views series: views are the difference between per-Reel snapshot totals at "
+                   "the week boundaries (latest snapshot on or before each date), so they are approximate"
+                   + (f"; {ex} Reel(s) without a baseline snapshot are left out." if ex else "."))
+    out.append("")
+    cells = cell_table(con)
+    out.append("### Cells (format x audio x slot, loop videos)\n")
+    if not cells:
+        out.append("no loop videos yet\n")
+        return
+    out.append("| format | audio | slot | n | median score | followers per 1k views |")
+    out.append("|---|---|---|---|---|---|")
+    for c in cells:
+        out.append(f"| {c['format']} | {c['audio']} | {c['slot']} | {c['n']} | {f(c['median_score'], 2)} | "
+                   f"{f(c['followers_per_1k'], 2)} |")
+    out.append("")
+
+
 # ---------------------------------------------------------------- sections
 def sec_header(out, today, rows, con, med, mode, since):
     snaps = con.execute("SELECT MAX(taken_at) m FROM snapshots").fetchone()["m"]
     buckets: dict[str, int] = {}
     for r in rows:
         buckets[r.get("snapshot_bucket") or "?"] = buckets.get(r.get("snapshot_bucket") or "?", 0) + 1
-    out.append(f"# Kathakaar review pack, {today}\n")
     if mode == "provisional":
         out.append("> **Provisional score: pipeline/score.py score() not written yet.** Scores below are an "
                    "equal-weight geometric mean of the METRICS ratios, for ordering only.\n")
@@ -497,6 +638,8 @@ def cmd_pack(a) -> None:
     scores, med, mode = score_all(rows)
     today = datetime.now().strftime("%Y-%m-%d")
     out: list[str] = []
+    out.append(f"# Kathakaar review pack, {today}\n")
+    sec_scoreboard(out, con, datetime.now(IST).date())
     sec_header(out, today, rows, con, med, mode, since)
     sec_leaderboard(out, rows, scores)
     sec_tags(out, rows, scores)

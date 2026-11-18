@@ -39,15 +39,18 @@ PY
 # ---------------------------------------------------------------- jobs
 job_pull() {
   # YouTube first; its result is kept even if Instagram fails (the job still exits non-zero then -> INBOX failure line).
-  local yt_rc=0 ig_rc=0
+  local yt_rc=0 ig_rc=0 fl_rc=0
   python3 pipeline/analytics.py yt pull || yt_rc=$?
   if [ -f "$LAB/secrets/instagram.json" ]; then
     python3 pipeline/analytics.py ig pull || ig_rc=$?
   else
     echo "secrets/instagram.json missing: skipping Instagram pull"
   fi
+  # daily follower snapshot (no-op if today's rows exist); skips Instagram itself when secrets are missing
+  python3 pipeline/analytics.py followers pull || fl_rc=$?
   [ "$yt_rc" -ne 0 ] && return "$yt_rc"
-  return "$ig_rc"
+  [ "$ig_rc" -ne 0 ] && return "$ig_rc"
+  return "$fl_rc"
 }
 
 job_trends() {

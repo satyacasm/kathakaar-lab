@@ -45,9 +45,12 @@ surface as error codes 4, 17, 32 and 613 (and HTTP 429); the collector backs off
 2-3 calls per snapshotted reel and 1+ per comment pull, far below Meta's per-hour limits.
 
 Data lives in cache/analytics/ (git-ignored): analytics.sqlite (tables videos, snapshots, retention, traffic, daily,
-comments, ig_media, ig_snapshots, ig_comments, meta), episode_map.json and ig_episode_map.json. Timestamps are ISO-8601 UTC. Data API statistics are real-time; Analytics API
+comments, ig_media, ig_snapshots, ig_comments, followers, meta), episode_map.json and ig_episode_map.json. Timestamps are ISO-8601 UTC. Data API statistics are real-time; Analytics API
 numbers lag 1-2 days: both are stored side by side on each snapshot (api_* vs an_*), never reconciled.
 An episode.json with published.youtube.id maps automatically and wins over episode_map.json.
+
+`followers pull` stores one row per platform per IST day in `followers` (YouTube subscriberCount, Instagram
+followers_count); a second run the same day is a no-op.
 
 Quota: Data API channels/videos/playlistItems/commentThreads list calls cost 1 unit each (10,000/day free); the
 Analytics API has its own separate quota. A pull makes ~4 Analytics calls per snapshotted video.
@@ -81,7 +84,8 @@ MAP_PATH = STORE / "episode_map.json"
 IG_MAP_PATH = STORE / "ig_episode_map.json"
 EPISODES = LAB / "episodes"
 IST = ZoneInfo("Asia/Kolkata")
-SCHEMA_VERSION = 2          # 2 = adds the Instagram tables (ig_media, ig_snapshots, ig_comments)
+SCHEMA_VERSION = 3          # 2 = adds the Instagram tables (ig_media, ig_snapshots, ig_comments); 3 = followers
+IG_SECRETS = LAB / "secrets" / "instagram.json"
 
 BUCKETS = [("1h", 1), ("6h", 6), ("24h", 24), ("72h", 72), ("7d", 168), ("14d", 336), ("28d", 672), ("90d", 2160)]
 DAILY_MAX_AGE_H = 90 * 24
@@ -127,6 +131,11 @@ CREATE TABLE IF NOT EXISTS comments (
   comment_id TEXT PRIMARY KEY, video_id TEXT NOT NULL, parent_id TEXT, author TEXT, text TEXT, like_count INTEGER,
   published_at TEXT, updated_at TEXT, fetched_at TEXT);
 CREATE INDEX IF NOT EXISTS ix_comments_video ON comments(video_id, published_at);
+"""
+
+FOLLOWERS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS followers (
+  day TEXT NOT NULL, platform TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (day, platform));  -- day = IST date
 """
 
 IG_SCHEMA = """
@@ -232,7 +241,7 @@ def db() -> sqlite3.Connection:
     STORE.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
-    con.executescript(SCHEMA + IG_SCHEMA)
+    con.executescript(SCHEMA + IG_SCHEMA + FOLLOWERS_SCHEMA)
     meta_set(con, "schema_version", str(SCHEMA_VERSION))
     con.commit()
     return con
@@ -953,6 +962,53 @@ def cmd_ig_pull(a):
     sys.exit(1 if errors else 0)
 
 
+# ------------------------------------------------------------------ follower snapshots
+def followers_pull(con, errors: list | None = None) -> dict[str, int]:
+    """Record today's (IST) follower counts, one row per platform per day; a platform that already has today's row is
+    not fetched again. Returns {platform: count} for every platform that has a row today. Instagram is skipped (with a
+    log line) when secrets/instagram.json is missing. A failing platform is appended to `errors` and left out."""
+    day = datetime.now(IST).strftime("%Y-%m-%d")
+    have = {r["platform"]: r["count"] for r in con.execute("SELECT platform, count FROM followers WHERE day=?", (day,))}
+
+    def yt_count() -> int:
+        r = request(f"{yt.API}/channels", {"part": "statistics", "mine": "true"})
+        return int(r["items"][0]["statistics"]["subscriberCount"])
+
+    def ig_count() -> int:
+        return int(ig_get(ig_creds()["ig_user_id"], {"fields": "followers_count"})["followers_count"])
+
+    for platform, fetch in (("youtube", yt_count), ("instagram", ig_count)):
+        if platform in have:
+            continue
+        if platform == "instagram" and not IG_SECRETS.exists():
+            print("secrets/instagram.json missing: skipping Instagram followers")
+            continue
+        try:
+            have[platform] = fetch()
+        except (SystemExit, Exception) as e:
+            msg = f"{platform} followers: {igp.scrub(str(e))}"[:300]
+            if errors is None:
+                raise
+            errors.append(msg)
+            continue
+        con.execute("INSERT OR IGNORE INTO followers(day,platform,count) VALUES(?,?,?)", (day, platform, have[platform]))
+        con.commit()
+    return {p: have[p] for p in ("youtube", "instagram") if p in have}
+
+
+def cmd_followers_pull(_):
+    con = db()
+    errors: list[str] = []
+    counts = followers_pull(con, errors)
+    for p in ("youtube", "instagram"):
+        if p in counts:
+            print(f"{p} followers: {counts[p]}")
+    for e in errors:
+        print(f"  error: {e}", file=sys.stderr)
+    con.close()
+    sys.exit(1 if errors else 0)
+
+
 def yt_views_for(con, slug: str | None):
     """Latest YouTube view count of the episode's video(s), or None."""
     if not slug:
@@ -1117,6 +1173,8 @@ def main():
     p.add_argument("--unset", metavar="MEDIA_ID")
     p.set_defaults(f=cmd_ig_map)
     i.add_parser("export").set_defaults(f=cmd_ig_export)
+    p = top.add_parser("followers", help="daily follower snapshots").add_subparsers(dest="cmd", required=True)
+    p.add_parser("pull").set_defaults(f=cmd_followers_pull)
     top.add_parser("export", help="export YouTube and Instagram").set_defaults(f=cmd_export_all)
     a = ap.parse_args()
     a.f(a)
