@@ -6,9 +6,10 @@ fixed-purpose subcommand here, with paths confined to its episode (and music-lab
 Run and video lifecycle
   start [--slug-hint WORDS] [--now ISO]   next plan row -> scaffold + queue; prints START <id> <format> <audio>
                                           <topic_source>, or STOP time|buffer|max|plan
-  finish <id>                    package check, out/qa/frames.png, PRIVATE YouTube preview, sha256 of the finals,
-                                 status preview_ready; prints READY <id> <yt_id>
-  fail <id> --reason "..."       status failed + INBOX failure
+  finish <id>                    package check, needs a fresh out/qa/frames.png (run `frames` first), PRIVATE
+                                 YouTube preview, digests of finals/package/episode fields (integrity.py), status
+                                 preview_ready; prints READY <id> <yt_id>
+  fail <id> --reason "..."       producing -> failed + INBOX failure
   fallback <id> --reason "..."   switch to the 0-credit narrated format (over cap, no popular song)
   sweep [--reason "..."]         every video still producing -> failed (run.sh, after the Claude run)
   clock <id>                     minutes used of the 75-minute per-video budget
@@ -39,7 +40,7 @@ Window: start only between 00:30 and 06:00 IST ($LOOP_WINDOW_OVERRIDE=1 for a su
 Stops: 4+ videos in preview_ready/approved, $LOOP_MAX_VIDEOS (default 4) started since $LOOP_RUN_START, no open row.
 Plan: --plan, $PLAN_PATH or ideas/experiment_plan.md. Never publishes: the upload is always --preview (private).
 """
-import argparse, hashlib, ipaddress, json, math, os, re, shutil, socket, subprocess, sys
+import argparse, ipaddress, json, math, os, re, shutil, socket, subprocess, sys
 import urllib.error, urllib.parse, urllib.request
 from array import array
 from datetime import datetime, time, timedelta
@@ -50,7 +51,7 @@ for _p in (str(HERE.parent), str(HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import inbox, plan, vqueue
+import inbox, integrity, plan, vqueue
 from vqueue import TZ, one_line
 
 LAB = vqueue.LAB
@@ -73,7 +74,6 @@ VIDEO_MINUTES = 75                 # per-video budget the prompt holds the produ
 FALLBACK_CELL = ("narrated", "bed")
 KIND = {"narrated": "narrated_reel", "claim": "claim_reel"}   # music/shloka/dialogue stay music_reel
 PACKAGE = ("out/final/reel_with_song.mp4", "out/package/youtube.md", "out/package/caption_instagram.txt")
-FINALS = ("reel_with_song.mp4", "reel_SILENT.mp4")
 # the art style is never named in public copy
 STYLE_WORDS = ("watercolor", "watercolour", "pattachitra", "ink wash", "ink-wash", "art style", "house style",
                "painting style")
@@ -519,15 +519,9 @@ def check_copy(ep: Path):
             raise ProduceError(f"{rel} names the art style ({', '.join(hits)}): public copy never names it")
 
 
-def sha256(path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def finish(record_id) -> str:
+    """Runs unsandboxed (it needs secrets/ and the YouTube API), so it starts no ffmpeg: the contact sheet comes from
+    `produce.py frames` (sandboxed) and must be newer than the preview it shows."""
     rec = _producing(record_id)
     ep = _ep(record_id)
     need = list(PACKAGE) + (["out/final/reel_SILENT.mp4"] if rec.get("ig_mode") == "manual" else [])
@@ -535,8 +529,10 @@ def finish(record_id) -> str:
     if missing:
         raise ProduceError(f"{record_id}: missing {', '.join(missing)}")
     check_copy(ep)
-    frames(record_id)
-    hashes = {f: sha256(ep / "out/final" / f) for f in FINALS if (ep / "out/final" / f).is_file()}
+    sheet = ep / "out/qa/frames.png"
+    if not sheet.is_file() or sheet.stat().st_mtime < (ep / PACKAGE[0]).stat().st_mtime:
+        raise ProduceError(f"{record_id}: out/qa/frames.png is missing or older than the preview: run "
+                           f"`python3 pipeline/loop/produce.py frames {record_id}` and check it first")
     try:
         r = _run([sys.executable, YT_PUBLISH, "publish", record_id, "--video", "reel_with_song.mp4", "--preview"],
                  capture_output=True, text=True, timeout=UPLOAD_TIMEOUT)
@@ -547,7 +543,7 @@ def finish(record_id) -> str:
         tail = ((r.stderr or "") + (r.stdout or "")).strip()[-400:]
         raise ProduceError(f"{record_id}: private YouTube upload failed (exit {r.returncode}): {tail}")
     yt_id = ids[-1]
-    vqueue.transition(record_id, "preview_ready", yt_id=yt_id, credits=_credits(ep), final_sha256=hashes)
+    vqueue.transition(record_id, "preview_ready", yt_id=yt_id, credits=_credits(ep), **integrity.record(ep))
     return f"READY {record_id} {yt_id}"
 
 
@@ -565,10 +561,9 @@ def _credits(ep: Path) -> float:
 
 
 def fail(record_id, reason) -> str:
-    rec = _record(record_id)
+    rec = _producing(record_id)
     reason = one_line(reason)
-    if rec["status"] != "failed":
-        vqueue.transition(record_id, "failed", reason=reason)
+    vqueue.transition(record_id, "failed", reason=reason)
     inbox.add(f"Producer failed {record_id} ({rec['cell'].get('format')}/{rec['cell'].get('audio')}): {reason}",
               "failure")
     return f"FAILED {record_id}"
@@ -629,6 +624,11 @@ def run_start_balance(balance, now=None) -> str:
     now = _ist(now)
     start_iso = os.environ.get("LOOP_RUN_START") or now.isoformat(timespec="seconds")
     p = Path(RUN_FILE)
+    try:
+        if json.loads(p.read_text()).get("run_start") == start_iso:
+            raise ProduceError(f"the run-start balance for this run ({start_iso}) is already recorded")
+    except (OSError, ValueError):
+        pass
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"run_start": start_iso, "balance_start": float(balance), "recorded": now.isoformat()}) + "\n")
     return f"run start balance {float(balance):g} recorded"

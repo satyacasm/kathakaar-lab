@@ -24,13 +24,17 @@ def fail(msg, code=1):
     sys.exit(code)
 
 
-def resolve_ep(arg: str) -> Path:
+def resolve_ep(arg: str, episodes: Path = None) -> Path:
+    """The episode folder for a slug or path. It must be a folder directly inside episodes/ (symlinks resolved):
+    the stages write under it, so a path elsewhere is refused."""
+    episodes = Path(episodes or LAB / "episodes")
     p = Path(arg)
-    if p.is_dir() and (p / "script").is_dir():
-        return p.resolve()
-    ep = LAB / "episodes" / arg.rstrip("/").split("/")[-1]
+    ep = p if p.is_dir() and (p / "script").is_dir() else episodes / arg.rstrip("/").split("/")[-1]
     if not ep.is_dir():
-        fail(f"no such episode: {arg} (looked in {LAB / 'episodes'})")
+        fail(f"no such episode: {arg} (looked in {episodes})")
+    ep = ep.resolve()
+    if ep.parent != episodes.resolve():
+        fail(f"episode must be a folder directly inside {episodes}: {arg}")
     return ep
 
 

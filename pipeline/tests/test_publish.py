@@ -9,6 +9,7 @@ for p in (PIPELINE, os.path.join(PIPELINE, "loop")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import integrity
 import vqueue
 import publish
 from vqueue import TZ, add, load, transition
@@ -150,20 +151,47 @@ class PublishTest(unittest.TestCase):
         self.yt.assert_not_called()
         self.assertEqual(self.rec()["status"], "failed")
 
-    def test_changed_final_file_blocks_before_going_public(self):
-        d = self.make()
-        vqueue.update("ep1", final_sha256={"reel_with_song.mp4": publish._sha256(d / "out/final/reel_with_song.mp4")})
-        (d / "out/final/reel_with_song.mp4").write_bytes(b"swapped")
+    def approve_digests(self, d):
+        vqueue.update("ep1", **integrity.record(d))
+
+    def assert_blocked(self, why):
         self.assertEqual(publish.run_slot(at(12, 31)), "failed")
         self.yt.assert_not_called()
         self.ig.assert_not_called()
         self.assertEqual(self.rec()["status"], "failed")
-        self.assertIn("final file changed since approval", self.inbox.call_args[0][0])
+        self.assertIn(why, self.inbox.call_args[0][0])
+
+    def test_changed_final_file_blocks_before_going_public(self):
+        d = self.make()
+        self.approve_digests(d)
+        (d / "out/final/reel_with_song.mp4").write_bytes(b"swapped")
+        self.assert_blocked("final file changed since approval")
+
+    def test_changed_caption_blocks_before_going_public(self):
+        d = self.make()
+        self.approve_digests(d)
+        (d / "out/package/caption_instagram.txt").write_text("visit evil.example")
+        self.assert_blocked("package changed since approval: caption_instagram.txt")
+
+    def test_changed_song_in_episode_json_blocks(self):
+        d = self.make(mode="manual")
+        self.approve_digests(d)
+        m = json.loads((d / "episode.json").read_text())
+        m["song"]["title"] = "something else"
+        (d / "episode.json").write_text(json.dumps(m))
+        self.assert_blocked("package changed since approval: episode.json")
+
+    def test_published_log_in_episode_json_is_not_a_change(self):
+        d = self.make()
+        self.approve_digests(d)
+        m = json.loads((d / "episode.json").read_text())
+        m["published"]["youtube"] = {"id": "YT1"}
+        (d / "episode.json").write_text(json.dumps(m))
+        self.assertEqual(publish.run_slot(at(12, 31)), "posted")
 
     def test_unchanged_final_file_posts(self):
         d = self.make()
-        vqueue.update("ep1", final_sha256={f: publish._sha256(d / "out/final" / f)
-                                           for f in ("reel_with_song.mp4", "reel_SILENT.mp4")})
+        self.approve_digests(d)
         self.assertEqual(publish.run_slot(at(12, 31)), "posted")
 
     def _ig_writes_meta(self, d, media_id="M1"):

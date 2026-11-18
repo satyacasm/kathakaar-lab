@@ -16,7 +16,7 @@ second concurrent run return "locked".
 --dry-run makes no network call and changes no state. --now takes an ISO time (naive = IST) for rehearsals.
 Standard library only.
 """
-import argparse, contextlib, fcntl, hashlib, json, sys
+import argparse, contextlib, fcntl, json, sys
 from datetime import datetime
 from pathlib import Path
 
@@ -25,7 +25,7 @@ for _p in (str(HERE.parent), str(HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import inbox, instagram_publish, vqueue, youtube_publish
+import inbox, instagram_publish, integrity, vqueue, youtube_publish
 from vqueue import TZ, one_line
 
 EPISODES = vqueue.LAB / "episodes"
@@ -57,14 +57,6 @@ def _read_meta(ep: Path) -> dict:
     return json.loads((ep / "episode.json").read_text())
 
 
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _precheck(rec, ep: Path):
     """Return a problem string, or None. Runs before anything becomes public."""
     if not rec.get("yt_id"):
@@ -73,10 +65,9 @@ def _precheck(rec, ep: Path):
         _read_meta(ep)
     except (OSError, ValueError) as e:
         return f"episode.json unreadable: {e}"
-    for name, digest in (rec.get("final_sha256") or {}).items():   # recorded by produce.py finish
-        f = ep / "out/final" / name
-        if not f.is_file() or _sha256(f) != digest:
-            return f"final file changed since approval: {name}"
+    changed = integrity.problem(rec, ep)       # digests recorded by produce.py finish: what Satyam approved
+    if changed:
+        return changed
     if rec.get("ig_mode") == "manual":
         if not (ep / "out/final" / MANUAL_VIDEO).exists():
             return f"missing {ep / 'out/final' / MANUAL_VIDEO}"

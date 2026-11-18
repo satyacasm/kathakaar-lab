@@ -24,10 +24,38 @@ FADE = 0.4
 MIX_REL = "audio/narration_mix.wav"
 FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 FFPROBE = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
+LOCAL_ONLY = ["-protocol_whitelist", "file,pipe"]   # input option: local files only
+LAB = Path(__file__).resolve().parents[2]
+EPISODES = LAB / "episodes"
+POOL = LAB / "music-lab/pool"
 
 
 class NarrationError(Exception):
     pass
+
+
+def _inside(p: Path, root: Path) -> bool:
+    try:
+        p.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def check_episode(ep) -> Path:
+    """CLI guard: the episode must be a folder directly inside <lab>/episodes (symlinks resolved)."""
+    p = Path(ep).resolve()
+    if not p.is_dir() or p.parent != Path(EPISODES).resolve():
+        raise NarrationError(f"episode must be a folder directly inside episodes/: {ep}")
+    return p
+
+
+def check_bed(bed, ep: Path) -> Path:
+    """CLI guard: the bed must be an existing file inside music-lab/pool/ or the episode."""
+    p = Path(bed).resolve()
+    if not p.is_file() or not (_inside(p, Path(POOL).resolve()) or _inside(p, ep)):
+        raise NarrationError(f"bed must be a file in music-lab/pool/ or the episode: {bed}")
+    return p
 
 
 def _json(path: Path):
@@ -35,7 +63,7 @@ def _json(path: Path):
 
 
 def duration(path) -> float:
-    out = subprocess.run([FFPROBE, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+    out = subprocess.run([FFPROBE, *LOCAL_ONLY, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
                          check=True, capture_output=True, text=True).stdout
     return float(out.strip())
 
@@ -52,6 +80,8 @@ def _placed_takes(ep: Path):
         take = takes_dir / name
         if not take.exists():
             raise FileNotFoundError(take)
+        if not _inside(take.resolve(), ep.resolve()):
+            raise NarrationError(f"take {take} is outside the episode")
         out.append((float(ln["start"]), take))
     if not out:
         raise ValueError("timing_hi.json has no lines")
@@ -65,7 +95,7 @@ def build_mix(ep: Path, bed: Path | None, bed_db: float = -18.0) -> Path:
     total = voice_len + TAIL
     cmd = [FFMPEG, "-y", "-v", "error"]
     for _, t in placed:
-        cmd += ["-i", str(t)]
+        cmd += [*LOCAL_ONLY, "-i", str(t)]
     parts = []
     for i, (s, _) in enumerate(placed):
         ms = int(round(s * 1000))
@@ -74,7 +104,7 @@ def build_mix(ep: Path, bed: Path | None, bed_db: float = -18.0) -> Path:
     labels = "".join(f"[v{i}]" for i in range(n))
     parts.append(f"{labels}amix=inputs={n}:normalize=0:duration=longest,apad=whole_dur={total:.3f}[voice]")
     if bed is not None:
-        cmd += ["-stream_loop", "-1", "-i", str(bed)]
+        cmd += ["-stream_loop", "-1", *LOCAL_ONLY, "-i", str(bed)]
         parts.append(f"[{n}:a]aformat=sample_rates=44100:channel_layouts=stereo,volume={bed_db}dB,"
                      f"atrim=0:{total:.3f}[bed]")
         parts.append("[voice][bed]amix=inputs=2:normalize=0:duration=first[m]")
@@ -124,14 +154,15 @@ def main(argv=None) -> int:
     w = sub.add_parser("wire")
     w.add_argument("ep", type=Path)
     a = ap.parse_args(argv)
-    if a.cmd == "mix":
-        print(build_mix(a.ep, a.bed))
-    else:
-        try:
-            wire_edit(a.ep)
-        except NarrationError as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 1
+    try:
+        ep = check_episode(a.ep)
+        if a.cmd == "mix":
+            print(build_mix(ep, check_bed(a.bed, ep) if a.bed else None))
+        else:
+            wire_edit(ep)
+    except NarrationError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     return 0
 
 

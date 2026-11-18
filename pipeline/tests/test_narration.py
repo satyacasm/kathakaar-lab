@@ -136,3 +136,64 @@ class TestNarration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNarrationCliGuards(unittest.TestCase):
+    """The CLI (what the producer runs) only touches an episode folder directly inside episodes/ and a bed from
+    music-lab/pool/ or the episode."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.ep = make_episode(self.root)                      # <root>/ep
+        self.pool = self.root / "pool"
+        self.pool.mkdir()
+        sine(self.pool / "bed.wav", 3.0, 110)
+        for attr, val in (("EPISODES", self.root), ("POOL", self.pool)):
+            old = getattr(narration, attr)
+            setattr(narration, attr, val)
+            self.addCleanup(setattr, narration, attr, old)
+
+    def cli(self, *args):
+        with mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+            return narration.main(list(args))
+
+    def test_mix_with_pool_bed(self):
+        self.assertEqual(self.cli("mix", str(self.ep), "--bed", str(self.pool / "bed.wav")), 0)
+        self.assertTrue((self.ep / "audio/narration_mix.wav").exists())
+
+    def test_rejects_episode_outside_episodes(self):
+        other = self.root / "x" / "ep"
+        other.mkdir(parents=True)
+        for ep in (other, self.root, Path("/tmp")):
+            self.assertEqual(self.cli("mix", str(ep)), 1, ep)
+            self.assertEqual(self.cli("wire", str(ep)), 1, ep)
+        self.assertFalse((other / "audio").exists())
+
+    def test_rejects_bed_outside_pool_and_episode(self):
+        secret = self.root / "secret.wav"
+        sine(secret, 1.0)
+        for bed in (secret, Path("/etc/hosts"), Path("https://example.com/a.mp3")):
+            self.assertEqual(self.cli("mix", str(self.ep), "--bed", str(bed)), 1, bed)
+        self.assertFalse((self.ep / "audio/narration_mix.wav").exists())
+
+    def test_takes_dir_cannot_leave_the_episode(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        sine(outside / "L01.wav", 2.0)
+        sine(outside / "L02.wav", 2.0)
+        picks = json.loads((self.ep / "voice/picks_hi.json").read_text())
+        picks["takes_dir"] = "../outside"
+        (self.ep / "voice/picks_hi.json").write_text(json.dumps(picks))
+        self.assertEqual(self.cli("mix", str(self.ep)), 1)
+
+    def test_ffmpeg_inputs_are_local_only(self):
+        with mock.patch.object(narration.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, "1.0\n", "")
+            narration.build_mix(self.ep, self.pool / "bed.wav")
+        for call in run.call_args_list:
+            cmd = call.args[0]
+            for i, x in enumerate(cmd):
+                if x == "-i":
+                    self.assertEqual(cmd[i - 2:i], ["-protocol_whitelist", "file,pipe"], cmd)

@@ -63,7 +63,7 @@ command per call, with no `cd`, pipes, `&&`, `;` or redirects. Anything else is 
 | beat grid | `P beats <id> audio/song.wav` (tempo, beat times, strongest onsets: an estimate to start bars from) |
 | voice | `P voice <id> hindi_takes [--takes 3] [--lines 3,9]`; `P voice <id> review_takes [--pick 3:2]`; `P voice-timing <id>` |
 | narration track | `python3 pipeline/loop/narration.py mix episodes/<id> --bed episodes/<id>/audio/bed.wav`, `python3 pipeline/loop/narration.py wire episodes/<id>` |
-| done | `P finish <id>` → `READY <id> <yt_id>` |
+| done | `P frames <id>` (checked), then `P finish <id>` → `READY <id> <yt_id>` |
 | give up on a video | `P fail <id> --reason "..."` |
 | research library | `pipeline/sources_search.py <terms…>`, `--show <key>:<line> --context 60`, `--list` |
 | reel stages | `pipeline/.venv/bin/python pipeline/reel.py <id> check|stills|motion|hero-plan|hero-log|finish|assemble` |
@@ -184,7 +184,8 @@ Write `out/package/youtube.md` in the format of `episodes/003-diwali-across-indi
 (`## Title (Hindi, primary)` with `#Shorts`, `## Description (Hindi)` ending in the sources line,
 `## English title`, `## English description`, `## Tags`; titles ≤ 100 characters, no `<` or `>`), and
 `out/package/caption_instagram.txt` (Hindi first line hook, short English line, sources, 5-8 hashtags). Never name
-the art style. Then `P finish <id>`. On `READY` go to the next video. On an error that you can fix (missing file,
+the art style. Then `P finish <id>` (it needs the `P frames <id>` contact sheet made after the last assemble; if
+you reassembled, run `P frames <id>` and check the sheet again first). On `READY` go to the next video. On an error that you can fix (missing file,
 style word), fix it and run finish again; on an upload error, fail the video with the error text.
 
 ### Step 10. Failing a video

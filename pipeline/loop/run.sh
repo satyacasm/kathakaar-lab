@@ -136,12 +136,21 @@ print(json.dumps({"sandbox": {
         "higgsfield.ai", "*.higgsfield.ai", "*.amazonaws.com", "*.cloudfront.net",
         "*.r2.cloudflarestorage.com", "storage.googleapis.com",          # Higgsfield media (produce fetch/put)
         "huggingface.co", "*.huggingface.co", "*.hf.co"]},                 # model cache revalidation (read only)
+    # Reads: deny the whole home folder, then allow back only what the stages read (the lab's working folders, the
+    # uv Python + tools behind the venvs and mflux, Hugging Face model files, fonts). secrets/, ~/.ssh, credentials,
+    # shell history, keychains, browser profiles and ~/.cache/huggingface/token stay unreadable. Writes: the lab (cwd)
+    # minus code and secrets, plus the Hugging Face model cache only.
     "filesystem": {
-        "denyRead": both([f"{lab}/secrets", f"{home}/.ssh", f"{home}/.config", f"{home}/.aws", f"{home}/.gnupg",
-                          f"{home}/.netrc"]),
+        "denyRead": both([home, f"{lab}/secrets", f"{home}/.cache/huggingface/token",
+                          f"{home}/.cache/huggingface/stored_tokens"]),
+        "allowRead": both([f"{lab}/{p}" for p in ("episodes", "ideas", "music-lab", "sources", "brand", "pipeline",
+                                                  "engine", "models", "cache", "tmp", "tools", "vendor",
+                                                  "ASSETS.md", "PIPELINE.md")]
+                          + [f"{home}/.local/share/uv", f"{home}/.local/bin", f"{home}/.cache/huggingface/hub",
+                             f"{home}/.cache/huggingface/xet", f"{home}/Library/Fonts"]),
         "denyWrite": both([f"{lab}/{p}" for p in ("pipeline", "engine", "brand", "sources", "secrets", ".git",
                                                   ".claude", "PIPELINE.md", "CLAUDE.md")]),
-        "allowWrite": [f"{home}/.cache", f"{home}/Library/Caches"]},
+        "allowWrite": [f"{home}/.cache/huggingface/hub", f"{home}/.cache/huggingface/xet"]},
 }}))
 PY
 }
@@ -161,7 +170,9 @@ job_produce() {
   local secs settings
   secs="$(produce_window)" || return 1
   if [ "$secs" -le 60 ]; then echo "outside night window (00:30-05:30 IST): not starting"; return 0; fi
-  if [ "${LOOP_PRODUCE_SANDBOX:-1}" = "0" ]; then settings='{}'; echo "WARNING: Bash sandbox off (LOOP_PRODUCE_SANDBOX=0)"
+  if [ "${LOOP_PRODUCE_SANDBOX:-1}" = "0" ]; then
+    settings='{}'; echo "WARNING: Bash sandbox off (LOOP_PRODUCE_SANDBOX=0)"
+    inbox "producer ran WITHOUT the Bash sandbox (LOOP_PRODUCE_SANDBOX=0): for diagnosis only; unset it" info
   else settings="$(produce_settings)" || return 1; fi
   LOOP_RUN_START="$(python3 -c 'from datetime import datetime; from zoneinfo import ZoneInfo; print(datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(timespec="seconds"))')"
   export LOOP_RUN_START

@@ -9,6 +9,7 @@ for p in (PIPELINE, os.path.join(PIPELINE, "loop")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import integrity
 import plan
 import produce
 import vqueue
@@ -83,7 +84,7 @@ class ProduceTest(unittest.TestCase):
     def rec(self, rid):
         return next(r for r in load() if r["id"] == rid)
 
-    def package(self, rid, caption=True, video=True, yt=True, text="Jatayu's last flight"):
+    def package(self, rid, caption=True, video=True, yt=True, text="Jatayu's last flight", sheet=True):
         d = self.eps / rid
         (d / "out/final").mkdir(parents=True, exist_ok=True)
         (d / "out/package").mkdir(parents=True, exist_ok=True)
@@ -94,6 +95,11 @@ class ProduceTest(unittest.TestCase):
             (d / "out/package/youtube.md").write_text(f"## Title\n{text}\n")
         if caption:
             (d / "out/package/caption_instagram.txt").write_text(text)
+        if sheet and video:
+            (d / "out/qa").mkdir(parents=True, exist_ok=True)
+            (d / "out/qa/frames.png").write_bytes(b"png")
+            t = (d / "out/final/reel_with_song.mp4").stat().st_mtime
+            os.utime(d / "out/qa/frames.png", (t + 1, t + 1))
         return d
 
     # ---------------------------------------------------------------- start
@@ -201,7 +207,7 @@ class ProduceTest(unittest.TestCase):
 
     def test_start_fails_records_left_producing_by_an_earlier_run(self):
         self.make("004-old", "producing")
-        out = self.start(run_start=NIGHT + timedelta(minutes=1))
+        out = self.start(run_start=datetime.now(TZ) + timedelta(minutes=1))   # 004-old started before this run
         self.assertTrue(out.startswith("START"), out)
         self.assertEqual(self.rec("004-old")["status"], "failed")
         self.assertIn("interrupted", self.rec("004-old")["reason"])
@@ -230,20 +236,37 @@ class ProduceTest(unittest.TestCase):
         self.assertEqual(self.rec(rid)["status"], "producing")
         self.assertFalse(any(c[-1] == "--preview" for c in self.calls))
 
-    def test_finish_uploads_and_marks_ready(self):
+    def test_finish_uploads_and_records_what_was_approved(self):
         rid = self.start().split()[1]
         d = self.package(rid)
         self.assertEqual(produce.finish(rid), f"READY {rid} YT9")
         r = self.rec(rid)
         self.assertEqual((r["status"], r["yt_id"]), ("preview_ready", "YT9"))
-        self.assertEqual(r["final_sha256"]["reel_with_song.mp4"], produce.sha256(d / "out/final/reel_with_song.mp4"))
+        self.assertEqual(r["final_sha256"]["reel_with_song.mp4"], integrity.sha256(d / "out/final/reel_with_song.mp4"))
         self.assertIn("reel_SILENT.mp4", r["final_sha256"])
-        self.assertTrue((d / "out/qa/frames.png").exists())
+        self.assertEqual(set(r["package_sha256"]), {"caption_instagram.txt", "youtube.md"})
+        self.assertEqual(r["meta_sha256"], integrity.meta_digest(json.loads((d / "episode.json").read_text())))
+        self.assertIsNone(integrity.problem(r, d))
         up = next(c for c in self.calls if any(x.endswith("youtube_publish.py") for x in c))
         self.assertEqual(up[-5:], ["publish", rid, "--video", "reel_with_song.mp4", "--preview"])
-        ff = next(c for c in self.calls if "ffmpeg" in c[0])
-        self.assertIn("tile=", " ".join(ff))
-        self.assertIn("fps=1", " ".join(ff))
+        self.assertFalse(any("ffmpeg" in c[0] or "ffprobe" in c[0] for c in self.calls))  # finish is unsandboxed
+
+    def test_finish_needs_a_fresh_contact_sheet(self):
+        rid = self.start().split()[1]
+        d = self.package(rid, sheet=False)
+        with self.assertRaises(produce.ProduceError) as cm:
+            produce.finish(rid)
+        self.assertIn("frames.png", str(cm.exception))
+        (d / "out/qa").mkdir(parents=True)
+        (d / "out/qa/frames.png").write_bytes(b"png")
+        t = (d / "out/final/reel_with_song.mp4").stat().st_mtime
+        os.utime(d / "out/qa/frames.png", (t - 60, t - 60))       # made before the last assemble
+        with self.assertRaises(produce.ProduceError):
+            produce.finish(rid)
+        self.assertEqual(self.rec(rid)["status"], "producing")
+        produce.frames(rid)                                       # the sandboxed step (fake ffmpeg here)
+        os.utime(d / "out/qa/frames.png", (t + 1, t + 1))
+        self.assertTrue(produce.finish(rid).startswith("READY"))
 
     def test_finish_upload_failure_keeps_producing(self):
         rid = self.start().split()[1]
@@ -294,6 +317,13 @@ class ProduceTest(unittest.TestCase):
         text, kind = self.inbox.call_args[0]
         self.assertEqual(kind, "failure")
         self.assertIn(rid, text)
+
+    def test_fail_only_a_producing_video(self):
+        self.make("003-x", "preview_ready")
+        with self.assertRaises(produce.ProduceError):
+            produce.fail("003-x", "no")
+        self.assertEqual(self.rec("003-x")["status"], "preview_ready")
+        self.inbox.assert_not_called()
 
     def test_fallback_switches_cell_and_kind(self):
         self.write_plan([("2026-11-19", "12:30", "music", "popular", "song_story", "no", "")])
@@ -418,6 +448,18 @@ class ProduceTest(unittest.TestCase):
             out = produce.run_end_balance(90, NIGHT)                        # 10 drop vs 3 logged
             self.assertIn("unrecorded Higgsfield spend", out)
             self.assertEqual(self.inbox.call_args[0][1], "failure")
+
+    def test_run_start_cannot_reset_the_baseline(self):
+        root = Path(self.tmp.name)
+        with mock.patch.object(produce, "RUN_FILE", root / "run.json"), \
+                mock.patch.dict(os.environ, {"LOOP_RUN_START": "2026-11-19T01:00:00+05:30"}):
+            produce.run_start_balance(100, NIGHT)
+            with self.assertRaises(produce.ProduceError):
+                produce.run_start_balance(500, NIGHT)
+            self.assertEqual(json.loads((root / "run.json").read_text())["balance_start"], 100)
+        with mock.patch.object(produce, "RUN_FILE", root / "run.json"), \
+                mock.patch.dict(os.environ, {"LOOP_RUN_START": "2026-11-20T01:00:00+05:30"}):
+            produce.run_start_balance(90, NIGHT)                  # the next night starts fresh
 
     def test_unreconciled_run_is_reported(self):
         root = Path(self.tmp.name)
