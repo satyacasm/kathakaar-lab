@@ -8,6 +8,9 @@ Runs the existing loop scripts on a schedule via launchd. Code only: no metrics 
 | `trends` | daily 07:30 | `trends.py scan` + `digest` (already scanned today = success; a digest with a filled "Fit" section is not regenerated) |
 | `ig-refresh` | Monday 08:00 | `instagram_publish.py refresh` if `secrets/instagram.json` exists, else a logged skip |
 | `review` | Sunday 09:00 | `review.py pack`, then the headless Claude review below |
+| `produce` | daily 01:00 | headless Claude (sandboxed) makes videos until the buffer holds 4; stops at 06:00 IST or the credit cap; uploads each privately |
+| `ask` | daily 09:00 | if videos await approval: macOS notification + INBOX decision with their private links |
+| `publish` | daily 12:30 and 19:30 (`com.kathakaar.publish-1` / `-2`, both run `run.sh publish`) | posts the approved video whose slot is due: YouTube public + Instagram Reel (popular audio: Instagram handed to Satyam) |
 
 launchd runs a calendar job missed while the Mac slept once on wake; nothing runs while it is off.
 
@@ -23,7 +26,7 @@ launchd runs a calendar job missed while the Mac slept once on wake; nothing run
 pipeline/loop/install.sh --dry-run   # print the plists
 pipeline/loop/install.sh             # write ~/Library/LaunchAgents/com.kathakaar.<job>.plist and bootstrap them
 pipeline/loop/uninstall.sh
-pipeline/loop/run.sh pull            # run any job by hand (pull|trends|ig-refresh|review|status)
+pipeline/loop/run.sh pull            # run any job by hand (pull|trends|ig-refresh|review|produce|ask|publish|status)
 ```
 
 ## Headless review sandbox
@@ -51,3 +54,47 @@ python3 pipeline/loop/vqueue.py approve <id>...      # prints each slot in IST
 python3 pipeline/loop/vqueue.py reject <id> --reason "slow hook"
 python3 pipeline/loop/vqueue.py requeue <id>
 ```
+
+## The daily rhythm (IST)
+```
+07:30  trends    trends.py scan + digest
+hourly pull      analytics yt + ig pull, daily follower snapshot
+01:00  produce   plan -> research -> script -> stills -> hero/audio -> assemble -> private YouTube upload (until 4 buffered)
+09:00  ask       notification + INBOX decision listing the videos that await approval
+any    approve   Satyam, from his phone in a Remote Control session
+12:30  publish   slot 1: oldest approved video -> YouTube public + Instagram Reel
+19:30  publish   slot 2: same
+Sun 09 review    weekly scoreboard + plan update
+```
+
+## Approving from Remote Control
+The 09:00 INBOX decision lists each video with its private YouTube link. Watch them, then in any Claude Code
+Remote Control session in this repo say "approve 1 and 2" or "reject 3: slow hook". Claude runs, from the lab:
+```
+python3 pipeline/loop/vqueue.py approve <id> [<id>...]      # prints each slot (IST); refuses if the private preview is gone
+python3 pipeline/loop/vqueue.py reject <id> --reason "slow hook"   # reason feeds the next review
+```
+Nothing becomes public without an approve for that video: no approval means the slot is skipped. A video not posted
+within 2 h of its slot moves to the next free slot.
+
+## Pause and resume
+```
+touch cache/loop/PAUSE     # every job except `status` logs "paused" and exits 0
+rm cache/loop/PAUSE        # resume
+pipeline/loop/uninstall.sh # or remove the launchd agents altogether
+```
+`run.sh status` prints PAUSED while the file exists. An already-running job is not interrupted.
+
+## Security notes
+- The producer runs headless Claude in `--permission-mode dontAsk` inside a Bash sandbox (seatbelt): reads limited to
+  the lab's working folders, writes denied on `pipeline/`, `engine/`, `brand/`, `secrets/`, `.git`; network limited to an
+  allowlist of hosts (Pixabay, Higgsfield media, Hugging Face); no git, no raw sqlite3, no reading `secrets/`, no posting.
+- The review job is allowlisted the same way (see above). Comments and web text are untrusted input.
+- Only `publish.py` ever makes a video public, and only for a record `approve`d by Satyam; approve checks the private
+  preview still exists. The queue, plan, metrics and approvals live in git-ignored `cache/` and `ideas/`.
+
+## Installing the schedule
+Installing needs Satyam's go: `pipeline/loop/install.sh --dry-run` first, then `pipeline/loop/install.sh`.
+The plists point at the checkout the script is run from (`$LAB`), so run install.sh from the MAIN checkout
+(`/Users/satyam/kathakaar-lab`) after the loop branch is merged, not from a worktree. Re-running is safe (agents are
+booted out first). `uninstall.sh` removes all eight agents.

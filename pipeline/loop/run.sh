@@ -1,13 +1,16 @@
 #!/bin/bash
 # Single entry point for the Kathakaar feedback-loop automation (launchd calls this; you can too).
 #
-#   pipeline/loop/run.sh <job>        job = pull | trends | ig-refresh | review | produce | status
+#   pipeline/loop/run.sh <job>        job = pull | trends | ig-refresh | review | produce | ask | publish | status
 #
 # Per job: PATH is set, cwd = the lab, a lock dir (cache/loop/locks/<job>.lock, stale after 3 h; produce 5.5 h)
 # prevents overlap,
 # output goes to cache/loop/logs/<job>-<YYYY-MM>.log with timestamps, and cache/loop/status.json records
 # {last_run, exit, duration_s}. A non-zero exit raises a macOS notification and an INBOX failure line.
 # A job that finds its lock held logs "skipped" and exits 0 (not a failure).
+#
+# PAUSE switch: while cache/loop/PAUSE exists every job except `status` logs "paused" and exits 0
+# (touch cache/loop/PAUSE to pause the whole loop, rm it to resume; `status` shows PAUSED).
 #
 # launchd note: a calendar job missed while the Mac slept runs once on wake; nothing runs while the Mac is off.
 set -u
@@ -240,7 +243,16 @@ job_produce() {
   return "$rc"
 }
 
+job_ask() {
+  python3 pipeline/loop/ask.py
+}
+
+job_publish() {
+  python3 pipeline/loop/publish.py slot
+}
+
 job_status() {
+  if [ -e "$LOOP/PAUSE" ]; then echo "== PAUSED (rm cache/loop/PAUSE to resume)"; else echo "== running (not paused)"; fi
   echo "== $STATUS"
   cat "$STATUS" 2>/dev/null || echo "(no runs recorded yet)"
   echo
@@ -253,10 +265,12 @@ job_status() {
 if [ "$JOB" = "status" ]; then job_status; exit 0; fi
 
 case "$JOB" in
-  pull|trends|ig-refresh|review|produce) ;;
-  *) log "unknown job '$JOB'"; echo "usage: run.sh pull|trends|ig-refresh|review|produce|status" >&2
+  pull|trends|ig-refresh|review|produce|ask|publish) ;;
+  *) log "unknown job '$JOB'"; echo "usage: run.sh pull|trends|ig-refresh|review|produce|ask|publish|status" >&2
      inbox "loop job '$JOB' failed: unknown job name" failure; exit 2 ;;
 esac
+
+if [ -e "$LOOP/PAUSE" ]; then log "paused (cache/loop/PAUSE exists); not running"; exit 0; fi
 
 LOCK="$LOOP/locks/$JOB.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
