@@ -48,6 +48,16 @@ DB = LAB / "cache/analytics/analytics.sqlite"
 THUMBS = LAB / "cache/analytics/thumbs"
 VOCAB = LAB / "pipeline/features_vocab.json"
 CSV_DEFAULT = LAB / "cache/analytics/features_table.csv"
+
+
+def _confine(path, *roots) -> Path:
+    """Resolve `path` (symlinks followed) and refuse it unless it lies under one of `roots`."""
+    p = Path(path).resolve()
+    for r in roots:
+        r = Path(r).resolve()
+        if p == r or r in p.parents:
+            return p
+    sys.exit(f"error: refusing to write {p}: output must be under " + " or ".join(str(Path(r).resolve()) for r in roots))
 EPISODES = LAB / "episodes"
 IST = timezone(timedelta(hours=5, minutes=30))
 FPS = 30  # Remotion timeline frame rate used by shots.json (frame ranges)
@@ -434,6 +444,7 @@ def fmt(x, w: int, nd: int = 1) -> str:
 
 
 def cmd_table(a) -> None:
+    dest = _confine(a.csv, LAB / "cache/analytics") if a.csv else None   # refuse before any work
     rows, cols = table_rows()
     if not rows:
         sys.exit("no tagged videos yet; run `features.py auto`")
@@ -449,7 +460,7 @@ def cmd_table(a) -> None:
             f"{short('hook_type', 9)} {short('story_type', 10)} {short('emotion', 7)} {short('audio_type', 10)} {short('opening_visual', 8)}"
         )
     if not a.no_csv:
-        path = Path(a.csv) if a.csv else CSV_DEFAULT
+        path = dest if dest else CSV_DEFAULT
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=cols, restval="")

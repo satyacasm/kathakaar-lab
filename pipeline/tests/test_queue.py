@@ -120,6 +120,17 @@ class TestQueue(QueueTestBase):
             vqueue.main(["rejections", "--since", "2026-11-12"])
         self.assertEqual(buf.getvalue().strip(), "2026-11-17 | new | f / a | weak hook")
 
+    def test_rejections_cli_dash_for_missing_cell_fields(self):
+        import io, contextlib
+        add("x", {}, "api")
+        for st in ("producing", "preview_ready"):
+            transition("x", st)
+        reject("x", "r")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vqueue.main(["rejections", "--since", "2000-01-01"])
+        self.assertIn("| - / - | r", buf.getvalue())
+
     def test_one_line(self):
         self.assertEqual(one_line("## - [x]  hi\n there"), "x] hi there")
         self.assertEqual(len(one_line("x" * 500)), 300)

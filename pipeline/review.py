@@ -46,6 +46,16 @@ LAB = Path(__file__).resolve().parents[1]
 DB = LAB / "cache/analytics/analytics.sqlite"
 EPISODES = LAB / "episodes"
 REVIEW_DIR = LAB / "cache/analytics/review"
+
+
+def _confine(path, *roots) -> Path:
+    """Resolve `path` (symlinks followed) and refuse it unless it lies under one of `roots`."""
+    p = Path(path).resolve()
+    for r in roots:
+        r = Path(r).resolve()
+        if p == r or r in p.parents:
+            return p
+    sys.exit(f"error: refusing to write {p}: output must be under " + " or ".join(str(Path(r).resolve()) for r in roots))
 CSV_PATH = LAB / "cache/analytics/features_table.csv"
 META_KEY = "review_last_pack"
 MIN_VIEWS = 300
@@ -643,6 +653,7 @@ def sec_ig_comments(out, con, since, ours):
 
 # ---------------------------------------------------------------- command
 def cmd_pack(a) -> None:
+    dest = _confine(a.out, REVIEW_DIR) if a.out else None   # refuse a stray --out before any work
     if not DB.exists():
         sys.exit(f"no analytics DB at {DB}: run analytics.py pull first")
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
@@ -667,7 +678,7 @@ def cmd_pack(a) -> None:
     sec_new(out, rows, con, since)
     sec_comments(out, rows, con, since)
     out.append("## 8. Open questions\n\n")
-    path = Path(a.out) if a.out else REVIEW_DIR / f"pack_{today}.md"
+    path = dest if dest else REVIEW_DIR / f"pack_{today}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out), encoding="utf-8")
     con.close()

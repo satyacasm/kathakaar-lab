@@ -3,6 +3,7 @@
 
   plan.py new-fortnight [--start DATE]   28 rows that bring every (format, audio) cell to n>=3 within the budget
   plan.py next-week [--start DATE]       14 rows: 10 from the best-scoring cells, 4 exploratory (needs analytics)
+  plan.py status                         print the last planned day: last_day=YYYY-MM-DD rows=N
   plan.py show                           print the plan file
   plan.py next [--take VIDEO_ID]         print the earliest row without an id; --take records the id on it
 
@@ -10,7 +11,7 @@ Plan file: ideas/experiment_plan.md (git-ignored), or --path / $PLAN_PATH. Markd
 day | slot | format | audio | topic_source | locked | id.  Rows marked locked (or already holding an id) survive
 a regeneration. Budget wins over n>=3 (cells that do not fit are carried into the next fortnight).
 """
-import argparse, os, statistics, sys
+import argparse, os, tempfile, statistics, sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,6 +23,16 @@ for _p in (Path(__file__).resolve().parent, Path(__file__).resolve().parents[1])
 LAB = Path(__file__).resolve().parents[2]
 PLAN_PATH = LAB / "ideas/experiment_plan.md"
 TZ = ZoneInfo("Asia/Kolkata")
+
+
+def _confine(path, *roots) -> Path:
+    """Resolve `path` (symlinks followed) and refuse it unless it lies under one of `roots`."""
+    p = Path(path).resolve()
+    for r in roots:
+        r = Path(r).resolve()
+        if p == r or r in p.parents:
+            return p
+    sys.exit(f"error: refusing to write {p}: output must be under " + " or ".join(str(Path(r).resolve()) for r in roots))
 
 FORMATS = ("music", "narrated", "claim", "shloka", "dialogue")
 AUDIO = {"music": ("popular", "library", "original"), "shloka": ("library", "original"),
@@ -366,13 +377,18 @@ def main(argv=None):
         sp = sub.add_parser(name)
         sp.add_argument("--start", type=date.fromisoformat)
     sub.add_parser("show")
+    sub.add_parser("status")
     sp = sub.add_parser("next")
     sp.add_argument("--take", metavar="VIDEO_ID")
     a = ap.parse_args(argv)
-    path = Path(a.path)
+    path = _confine(a.path, LAB / "ideas", tempfile.gettempdir())
 
     if a.cmd == "show":
         print(path.read_text(encoding="utf-8") if path.exists() else "no plan yet")
+        return 0
+    if a.cmd == "status":
+        rows = read(path)
+        print(f"last_day={max(r['day'] for r in rows)} rows={len(rows)}" if rows else "no plan yet")
         return 0
     if a.cmd == "next":
         import vqueue

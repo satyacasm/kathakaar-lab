@@ -248,7 +248,7 @@ def main(argv=None):
         elif args.cmd == "rejections":
             for rec in rejections_since(date.fromisoformat(args.since)):
                 c = rec["cell"]
-                print(f"{rec['rejected_on']} | {rec['id']} | {c.get('format')} / {c.get('audio')} | {rec['reason']}")
+                print(f"{rec['rejected_on']} | {rec['id']} | {c.get('format') or '-'} / {c.get('audio') or '-'} | {rec['reason']}")
         elif args.cmd == "reject":
             print(f"rejected {reject(args.id, args.reason)['id']}")
         else:

@@ -52,6 +52,16 @@ STORE = LAB / "cache" / "analytics"
 DB_PATH = STORE / "trends.sqlite"
 CONFIG = Path(__file__).parent / "trends_queries.json"
 IDEAS = LAB / "ideas"
+
+
+def _confine(path, *roots) -> Path:
+    """Resolve `path` (symlinks followed) and refuse it unless it lies under one of `roots`."""
+    p = Path(path).resolve()
+    for r in roots:
+        r = Path(r).resolve()
+        if p == r or r in p.parents:
+            return p
+    sys.exit(f"error: refusing to write {p}: output must be under " + " or ".join(str(Path(r).resolve()) for r in roots))
 CALENDAR = IDEAS / "festival_calendar.json"
 EPISODES = LAB / "episodes"
 IST = ZoneInfo("Asia/Kolkata")
@@ -443,6 +453,7 @@ def our_coverage(pats) -> tuple[dict[str, list[str]], dict[str, float]]:
 
 
 def cmd_digest(a):
+    dest = _confine(a.out, IDEAS) if a.out else None   # refuse before any work
     con = db()
     cfg = load_config()
     pats = compile_aliases(cfg["characters"])
@@ -584,7 +595,7 @@ def cmd_digest(a):
         out.append(f"Calendar unavailable ({type(e).__name__}).")
     out += ["", "## Fit for Kathakaar (Claude)", "", ""]
 
-    path = Path(a.out) if a.out else IDEAS / f"trends-{today_ist()}.md"
+    path = dest if dest else IDEAS / f"trends-{today_ist()}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out), encoding="utf-8")
     log(f"wrote {path}")
