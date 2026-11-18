@@ -243,12 +243,11 @@ def cmd_refresh(_):
     print(f"Refreshed; token days left: {days_left(s)}")
 
 
-def cmd_publish(a):
-    ep = Path(a.episode)
-    ep = ep if ep.is_dir() else LAB / "episodes" / a.episode
+def _prepare(ep: Path, video_name: str):
+    """Checks shared by the CLI and publish_reel; exits (SystemExit) with a message on any problem."""
     meta_path = ep / "episode.json"
     meta = json.loads(meta_path.read_text())
-    video = ep / "out/final" / a.video
+    video = ep / "out/final" / video_name
     caption_file = ep / "out/package/caption_instagram.txt"
     if not video.exists():
         raise SystemExit(f"missing video: {video}")
@@ -260,12 +259,14 @@ def cmd_publish(a):
         raise SystemExit(f"{video.name} is {size / 2**20:.0f} MB; re-encode below {MAX_BYTES / 2**20:.0f} MB first")
     if meta.get("published", {}).get("instagram"):
         raise SystemExit(f"already on Instagram: {meta['published']['instagram'].get('permalink')}")
-    print(f"Episode {meta['id']} · {video.name} · {size / 2**20:.0f} MB · caption {len(caption)} chars")
-    if a.dry_run:
-        print("dry run: nothing uploaded")
-        return
-    if not a.yes_publish:
-        raise SystemExit("refusing to publish without --yes-publish (Gate 5: Satyam's explicit 'publish')")
+    return meta_path, meta, video, caption, size
+
+
+def publish_reel(ep: Path, video: str) -> dict:
+    """Upload out/final/<video> as a Reel, wait for processing, publish, log published.instagram in episode.json.
+    Returns {"media_id", "permalink"}. Raises SystemExit on any failure (nothing is logged then)."""
+    ep = Path(ep)
+    meta_path, meta, video_path, caption, size = _prepare(ep, video)
     s = load()
     tok, uid, g = s["access_token"], s["ig_user_id"], base(s)
     c = call("POST", f"{g}/{VERSION}/{uid}/media", {"media_type": "REELS", "upload_type": "resumable", "caption": caption,
@@ -274,7 +275,7 @@ def cmd_publish(a):
     print(f"container {cid}; uploading…")
     # Upload to the `uri` Meta returns: its API version can differ from ours (v27.0 vs v26.0 → FILE_NOT_FOUND).
     call("POST", c.get("uri") or f"{RUPLOAD}/{VERSION}/{cid}", headers={"Authorization": f"OAuth {tok}", "offset": "0", "file_size": str(size)},
-         body=video.read_bytes())
+         body=video_path.read_bytes())
     for _ in range(90):                       # up to ~15 min of processing
         st = call("GET", f"{g}/{VERSION}/{cid}", {"fields": "status_code,status", "access_token": tok})
         code = st.get("status_code")
@@ -289,9 +290,23 @@ def cmd_publish(a):
     info = call("GET", f"{g}/{VERSION}/{pub['id']}", {"fields": "permalink,media_product_type,timestamp", "access_token": tok})
     meta.setdefault("published", {})["instagram"] = {"media_id": pub["id"], "permalink": info.get("permalink"),
                                                      "type": info.get("media_product_type"), "at": info.get("timestamp"),
-                                                     "video": video.name}
+                                                     "video": video_path.name}
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n")
     print(f"Published: {info.get('permalink')}")
+    return {"media_id": pub["id"], "permalink": info.get("permalink")}
+
+
+def cmd_publish(a):
+    ep = Path(a.episode)
+    ep = ep if ep.is_dir() else LAB / "episodes" / a.episode
+    _, meta, video, caption, size = _prepare(ep, a.video)
+    print(f"Episode {meta['id']} · {video.name} · {size / 2**20:.0f} MB · caption {len(caption)} chars")
+    if a.dry_run:
+        print("dry run: nothing uploaded")
+        return
+    if not a.yes_publish:
+        raise SystemExit("refusing to publish without --yes-publish (Gate 5: Satyam's explicit 'publish')")
+    publish_reel(ep, a.video)
 
 
 def cmd_diagnose(_):

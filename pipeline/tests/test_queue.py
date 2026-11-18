@@ -119,6 +119,14 @@ class TestQueue(QueueTestBase):
             self.assertEqual(p.exitcode, 0)
         self.assertEqual(sorted(r["id"] for r in load()), ["p1", "p2"])
 
+    def test_update_sets_fields_without_status_change(self):
+        add("u", {"format": "f", "audio": "a", "slot_pref": "any"}, "api")
+        vqueue.update("u", yt_public=True)
+        self.assertTrue(load()[0]["yt_public"])
+        self.assertEqual(load()[0]["status"], "planned")
+        with self.assertRaises(QueueError):
+            vqueue.update("u", status="posted")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -136,6 +136,16 @@ def transition(record_id: str, new_status: str, **fields) -> dict:
         return r
 
 
+def update(record_id: str, **fields) -> dict:
+    """Set fields on a record without changing its status (status itself must go through transition)."""
+    if "status" in fields:
+        raise QueueError("use transition() to change status")
+    with _edit() as records:
+        r = _find(records, record_id)
+        r.update(fields)
+        return r
+
+
 def next_free_slot(records: list[dict], now: datetime) -> datetime:
     now = now.astimezone(TZ)
     held = {datetime.fromisoformat(r["slot"]).astimezone(TZ) for r in records
