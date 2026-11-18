@@ -38,9 +38,16 @@ PY
 
 # ---------------------------------------------------------------- jobs
 job_pull() {
-  python3 pipeline/analytics.py yt pull || return $?
-  # --- HOOK: Instagram metrics pull goes here once the Instagram API credentials exist
-  # (e.g. python3 pipeline/analytics.py ig pull). Not implemented yet.
+  # YouTube first; its result is kept even if Instagram fails (the job still exits non-zero then -> INBOX failure line).
+  local yt_rc=0 ig_rc=0
+  python3 pipeline/analytics.py yt pull || yt_rc=$?
+  if [ -f "$LAB/secrets/instagram.json" ]; then
+    python3 pipeline/analytics.py ig pull || ig_rc=$?
+  else
+    echo "secrets/instagram.json missing: skipping Instagram pull"
+  fi
+  [ "$yt_rc" -ne 0 ] && return "$yt_rc"
+  return "$ig_rc"
 }
 
 job_trends() {
@@ -77,6 +84,8 @@ job_review() {
         "Bash(python3 pipeline/features.py *)" \
         "Bash(python3 pipeline/analytics.py yt map*)" \
         "Bash(python3 pipeline/analytics.py yt status*)" \
+        "Bash(python3 pipeline/analytics.py ig map*)" \
+        "Bash(python3 pipeline/analytics.py ig status*)" \
         "Bash(python3 pipeline/review.py *)" \
         "Bash(python3 pipeline/trends.py digest*)" \
         "Bash(python3 pipeline/loop/inbox.py *)" \

@@ -6,7 +6,8 @@
 Assembles one deterministic markdown "review pack" that Claude reads to update ideas/LEARNINGS.md. It makes no
 judgements and writes no learnings: it only lays the evidence side by side. Sections: header (freshness, score mode,
 medians), leaderboard, tag comparisons, retention (with the steepest drop mapped to a script line), traffic sources,
-videos new since the last pack, comments since the last pack, and an empty "Open questions" heading for Claude.
+an Instagram Reels table (when IG data exists), videos new since the last pack, comments since the last pack
+(YouTube, then Instagram labelled by platform), and an empty "Open questions" heading for Claude.
 
 Inputs (all read-only): cache/analytics/analytics.sqlite (via analytics.py's tables), the tags+metrics CSV that
 `features.py table` writes (regenerated on every run), pipeline/score.py (METRICS, ratio, score), and per-episode
@@ -371,6 +372,40 @@ def sec_traffic(out, rows, con):
     out.append("")
 
 
+def has_ig(con) -> bool:
+    return bool(con.execute("SELECT 1 FROM sqlite_master WHERE name='ig_snapshots'").fetchone()) and \
+        bool(con.execute("SELECT 1 FROM ig_snapshots LIMIT 1").fetchone())
+
+
+def sec_instagram(out, con):
+    out.append("## 5b. Instagram Reels\n")
+    if not has_ig(con):
+        out.append("Instagram: no data yet\n")
+        return
+    out.append("Latest insights snapshot with data per Reel (insights lag up to 48 h; `-` = no data). Rates are per 1,000 "
+               "views (noisy under 300 views). skip % = reels_skip_rate as returned by "
+               "Meta; avg watch s = ig_reels_avg_watch_time in seconds. Episode `-` = not mapped "
+               "(`analytics.py ig map`).\n")
+    out.append("| reel | episode | published | bucket | views | reach | avg watch s | skip % | shares/1k | saves/1k | "
+               "comments/1k | likes/1k | caption |")
+    out.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    rows = con.execute("SELECT * FROM ig_media WHERE media_product_type='REELS' ORDER BY timestamp DESC").fetchall()
+    for m in rows:
+        s = con.execute("SELECT * FROM ig_snapshots WHERE media_id=? AND has_data=1 ORDER BY id DESC LIMIT 1",
+                        (m["media_id"],)).fetchone()
+        first = (m["caption"] or "").strip().splitlines()[0] if (m["caption"] or "").strip() else ""
+        head = f"| {m['media_id']} | {m['episode_slug'] or '-'} | {(m['timestamp'] or '')[:10]} | "
+        if not s:
+            out.append(head + f"- | - | - | - | - | - | - | - | - | {md(trunc(first, 40))} |")
+            continue
+        v = s["views"]
+        per = lambda k: f(s[k] / v * 1000, 1) if v and s[k] is not None else "-"  # noqa: E731
+        out.append(head + f"{s['bucket']} | {f(v, 0)} | {f(s['reach'], 0)} | {f(s['avg_watch_s'], 1)} | "
+                   f"{f(s['skip_rate'], 1)} | {per('shares')} | {per('saved')} | {per('comments')} | {per('likes')} | "
+                   f"{md(trunc(first, 40))} |")
+    out.append("")
+
+
 def sec_new(out, rows, con, since):
     out.append("## 6. New since last pack\n")
     new = []
@@ -418,6 +453,33 @@ def sec_comments(out, rows, con, since):
     out.extend(body)
     if not total:
         out.append("No new comments.\n")
+    sec_ig_comments(out, con, since, ours)
+
+
+def sec_ig_comments(out, con, since, ours):
+    exists = con.execute("SELECT 1 FROM sqlite_master WHERE name='ig_comments'").fetchone()
+    cs_all = con.execute("SELECT c.*, m.episode_slug, m.caption FROM ig_comments c JOIN ig_media m ON m.media_id=c.media_id "
+                         + ("WHERE c.timestamp > ? " if since else "") + "ORDER BY c.media_id, c.timestamp DESC",
+                         (since,) if since else ()).fetchall() if exists else []
+    out.append("### [Instagram] comments\n")
+    if not cs_all:
+        out.append("Instagram: no new comments.\n")
+        return
+    by: dict[str, list] = {}
+    for c in cs_all:
+        by.setdefault(c["media_id"], []).append(c)
+    n_ours = sum(1 for c in cs_all if ours(c["username"]))
+    out.append(f"Instagram comments published after {since or 'the beginning'}: **{len(cs_all)}** "
+               f"({n_ours} by the channel, labelled \"(ours)\").\n")
+    for mid, cs in by.items():
+        first = (cs[0]["caption"] or "").strip().splitlines()[0] if (cs[0]["caption"] or "").strip() else ""
+        out.append(f"#### [Instagram] {mid} ({cs[0]['episode_slug'] or 'unmapped'}), {md(trunc(first, 48))} ({len(cs)})\n")
+        for c in cs:
+            who = " (ours)" if ours(c["username"]) else ""
+            rep = "reply" if c["parent_id"] else "comment"
+            text = " ".join((c["text"] or "").split())
+            out.append(f"- [Instagram {rep}] {c['timestamp']} | {c['like_count'] or 0} likes | {c['username']}{who}: {text}")
+        out.append("")
 
 
 # ---------------------------------------------------------------- command
@@ -440,6 +502,7 @@ def cmd_pack(a) -> None:
     sec_tags(out, rows, scores)
     sec_retention(out, rows, con)
     sec_traffic(out, rows, con)
+    sec_instagram(out, con)
     sec_new(out, rows, con, since)
     sec_comments(out, rows, con, since)
     out.append("## 8. Open questions\n\n")
