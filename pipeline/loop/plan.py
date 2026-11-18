@@ -85,7 +85,9 @@ class _Builder:
 
 def fortnight(start: date, existing: list, credits_left: float) -> list:
     """28 rows, greedy: the cell with the largest deficit to n>=3 whose format differs from the previous row and
-    whose cost fits the remaining budget. Once nothing affordable is short, fill with the least-covered cells."""
+    whose cost fits the remaining budget. Once nothing affordable is short, fill with the least-covered cells.
+    Slot alternation per format is best-effort: with only two 0-credit formats at low budgets, strict alternation
+    is impossible."""
     n = existing_counts(existing)
     left = credits_left
     b = _Builder(start)
@@ -148,14 +150,23 @@ def _alternate_slots(rows) -> list:
 
 
 def _allocate(scores: list, total: int) -> list:
-    """Largest-remainder split of `total` rows over cells in proportion to score (each gets at least 1 when possible)."""
+    """Largest-remainder split of `total` rows over cells in proportion to score (each gets at least 1 when possible).
+    Scores at or below zero are shifted so the weakest gets a small positive weight (equal scores split evenly);
+    the result always sums to `total`."""
     k = len(scores)
     if k == 0:
         return []
-    s = sum(max(x, 0) for x in scores) or 1.0
+    lo, hi = min(scores), max(scores)
+    if hi == lo:
+        w = [1.0] * k
+    elif lo <= 0:
+        w = [x - lo + 0.1 * (hi - lo) for x in scores]
+    else:
+        w = list(scores)
+    s = sum(w)
     base = [1 if total >= k else 0] * k
     rest = total - sum(base)
-    shares = [max(x, 0) / s * rest for x in scores]
+    shares = [x / s * rest for x in w]
     out = [b + int(sh) for b, sh in zip(base, shares)]
     order = sorted(range(k), key=lambda i: -(shares[i] - int(shares[i])))
     for i in order[: total - sum(out)]:
@@ -163,17 +174,58 @@ def _allocate(scores: list, total: int) -> list:
     return out
 
 
-def exploit_week(start: date, cell_scores: dict, credits_left: float) -> list:
-    """14 rows: 10 from the top-scoring cells in proportion to score, 4 exploratory (untested cells first,
-    then the lowest-scoring ones). Over-budget rows are swapped to narrated/claim, costliest first."""
+MAX_FORMAT_ROWS = WEEK_ROWS // 2
+
+
+def _explore_pool(cell_scores, cell_counts, top):
+    """Cells to explore: with counts, those with n<3 (fewest first), else the lowest n; without counts, untested cells."""
+    if cell_counts is not None:
+        n = lambda c: cell_counts.get(c, 0)
+        order = sorted(CELLS, key=lambda c: (c in top, n(c), CELLS.index(c)))
+        short = [c for c in order if n(c) < MIN_N]
+        if short:
+            return short
+        low = min(n(c) for c in order)
+        return [c for c in order if n(c) == low]
+    ranked = sorted(cell_scores, key=lambda c: -cell_scores[c])
+    return [c for c in CELLS if c not in cell_scores] or list(reversed(ranked[3:])) or list(CELLS)
+
+
+def _cap_formats(picks: list, ranked: list, explore: list) -> None:
+    """No format may take more than half the week (else adjacent repeats are unavoidable): surplus rows move to the
+    next-best scored cell of another format, or an exploratory/any cell of another format."""
+    def counts():
+        c = {}
+        for p in picks:
+            c[p[0]] = c.get(p[0], 0) + 1
+        return c
+    while True:
+        fc = counts()
+        over = [f for f, n in fc.items() if n > MAX_FORMAT_ROWS]
+        if not over:
+            return
+        f = over[0]
+        ex = [i for i in range(EXPLOIT_ROWS, len(picks)) if picks[i][0] == f]
+        if ex:                                  # an exploratory row: swap for another exploratory cell
+            i, order = ex[-1], explore + CELLS
+        else:                                   # a top row: swap for the next-best scored cell
+            i, order = max(i for i, p in enumerate(picks) if p[0] == f), ranked + CELLS
+        picks[i] = next(c for c in order if c[0] != f and fc.get(c[0], 0) < MAX_FORMAT_ROWS)
+
+
+def exploit_week(start: date, cell_scores: dict, credits_left: float, cell_counts: dict = None) -> list:
+    """14 rows: 10 from the top-3 scoring cells in proportion to score, 4 exploratory (cells with n<3, then the
+    lowest n, when cell_counts is given; otherwise untested cells first). No format takes more than 7 rows, so
+    no two consecutive rows share a format. Over-budget rows are swapped to narrated/claim, costliest first."""
     ranked = sorted(cell_scores, key=lambda c: -cell_scores[c])
     top = ranked[:3]
     picks = []
     for c, k in zip(top, _allocate([cell_scores[c] for c in top], EXPLOIT_ROWS)):
         picks += [c] * k
-    explore_pool = [c for c in CELLS if c not in cell_scores] or list(reversed(ranked[3:])) or list(CELLS)
+    explore_pool = _explore_pool(cell_scores, cell_counts, top)
     for i in range(WEEK_ROWS - len(picks)):
         picks.append(explore_pool[i % len(explore_pool)])
+    _cap_formats(picks, ranked, explore_pool)
     # budget: downgrade the costliest picks to free formats (the less used of narrated/claim)
     total = sum(cell_cost(c) for c in picks)
     for i in sorted(range(len(picks)), key=lambda i: -cell_cost(picks[i])):
@@ -230,7 +282,7 @@ def read(path) -> list:
         if len(cells) != len(HEADER) or cells[0] == HEADER[0] or set(cells[0]) <= set("-: "):
             continue
         d = dict(zip(HEADER, cells))
-        d["locked"] = d["locked"].lower() in ("yes", "true", "1", "x")
+        d["locked"] = d["locked"].lower() in ("yes", "true", "1", "x", "y", "locked")
         rows.append(d)
     return rows
 
@@ -241,8 +293,12 @@ def write(rows: list, path) -> None:
     p = Path(path)
     merged = {(r["day"], r["slot"]): dict(r) for r in rows}
     for r in read(p):
-        if r["locked"] or r["id"]:
-            merged[(r["day"], r["slot"])] = r
+        key = (r["day"], r["slot"])
+        inc = merged.get(key)
+        # a file row that is locked or taken wins over a plain incoming row; an incoming row that is itself
+        # locked or taken (e.g. `next --take`) wins over the file copy
+        if (r["locked"] or r["id"]) and (inc is None or not (inc["locked"] or inc.get("id"))):
+            merged[key] = r
     out = sorted(merged.values(), key=lambda r: (r["day"], r["slot"]))
     lines = ["# Experiment plan", "",
              "Generated by pipeline/loop/plan.py. Mark a row `locked` to keep it across regeneration; the producer fills `id`.",
@@ -268,6 +324,8 @@ def _today():
 
 
 def _credits_left(records, today) -> float:
+    """Remaining loop credits for the month of `today` (the start date; a fortnight spanning two months is
+    budgeted against the start month only)."""
     from reel import budget
     month = today.strftime("%Y-%m")
     return budget.loop_cap(month) - budget.loop_spent(month, {r["id"] for r in records})
@@ -337,7 +395,7 @@ def main(argv=None):
         new = fortnight(start, records, left)
     else:
         cs = _load_scores(records)
-        new = exploit_week(start, cs, left) if cs else fortnight(start, records, left)[:WEEK_ROWS]
+        new = exploit_week(start, cs, left, existing_counts(records)) if cs else fortnight(start, records, left)[:WEEK_ROWS]
         if not cs:
             print("no scored cells: wrote exploration rows (fortnight order, first 14)")
     write(_keep_before(path, start) + new, path)
