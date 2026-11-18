@@ -2,13 +2,22 @@
 
 The ledger lives next to the episode folders: <ep_dir>/../credits.json. Higgsfield is never called from here;
 this only records and checks numbers.
+
+Loop caps: the content loop has its own monthly cap (config.json "loop_credits") on top of credits_per_month.
+CLI (run from the repo root):  pipeline/.venv/bin/python pipeline/reel/budget.py loop-status
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
 import os
+import sys
 from pathlib import Path
+
+if __name__ == "__main__":                      # run as a script: put pipeline/ on the path first
+    _p = str(Path(__file__).resolve().parents[1])
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from reel import shots as S
 
@@ -39,6 +48,60 @@ def _save(ep_dir, d):
 def month_spent(ledger, month: str) -> float:
     """month = 'YYYY-MM'"""
     return sum(e.get("credits", 0) for e in ledger["entries"] if str(e.get("date", "")).startswith(month))
+
+
+def loop_cap(month: str) -> float:
+    """Monthly credit cap for loop-produced videos ('YYYY-MM'); falls back to the 'default' entry."""
+    caps = S.load_config()["loop_credits"]
+    return caps.get(month, caps["default"])
+
+
+def _default_ledger() -> dict:
+    return load_ledger(Path(__file__).resolve().parents[2] / "episodes" / "x")
+
+
+def loop_spent(month: str, loop_ids, ledger=None) -> float:
+    """Credits spent in `month` on episodes whose id is in loop_ids."""
+    ledger = ledger if ledger is not None else _default_ledger()
+    return sum(e.get("credits", 0) for e in ledger["entries"]
+               if str(e.get("date", "")).startswith(month) and e.get("episode") in loop_ids)
+
+
+def can_spend(amount: float, month: str, loop_ids, ledger=None) -> tuple[bool, str]:
+    """(ok, reason). Blocked if the loop cap or the global monthly cap would be exceeded."""
+    ledger = ledger if ledger is not None else _default_ledger()
+    cap = loop_cap(month)
+    spent = loop_spent(month, loop_ids, ledger)
+    if spent + amount > cap + 1e-9:
+        return False, f"loop cap: {spent:g} spent + {amount:g} > {cap:g} for {month}"
+    gcap = S.load_config()["credits_per_month"]
+    gspent = month_spent(ledger, month)
+    if gspent + amount > gcap + 1e-9:
+        return False, f"monthly cap: {gspent:g} spent + {amount:g} > {gcap} for {month}"
+    return True, "ok"
+
+
+def queue_ids() -> set:
+    """Ids of videos in the approval queue; empty if the queue file does not exist."""
+    loop_dir = str(Path(__file__).resolve().parents[1] / "loop")
+    if loop_dir not in sys.path:
+        sys.path.insert(0, loop_dir)
+    try:
+        import vqueue
+        if not vqueue.QUEUE.exists():
+            return set()
+        return {r["id"] for r in vqueue.load()}
+    except ImportError:
+        return set()
+
+
+def loop_status(today=None) -> int:
+    month = (today or dt.date.today()).strftime("%Y-%m")
+    ids = queue_ids()
+    print(f"loop credits {month}: {loop_spent(month, ids):g} / {loop_cap(month):g} "
+          f"(global {month_spent(_default_ledger(), month):g} / {S.load_config()['credits_per_month']}, "
+          f"{len(ids)} queued videos)")
+    return 0
 
 
 def episode_spent(ledger, slug: str) -> float:
@@ -128,6 +191,11 @@ def hero_plan(ep_dir) -> int:
     print(f"  this reel          : {sm['reel_total']:g} / {c['credits_per_reel']}")
     print(f"  month {sm['month']}    : {sm['month_total']:g} / {c['credits_per_month']}")
     probs = cap_problems(sm)
+    ids = queue_ids()
+    if ep.name in ids:                          # loop videos also answer to the loop cap
+        ok, why = can_spend(sm["pending_total"], sm["month"], ids, load_ledger(ep))
+        if not ok:
+            probs.append(why)
     for m in probs:
         print("REFUSED:", m)
     return 1 if probs else 0
@@ -160,3 +228,10 @@ def hero_log(ep_dir, n, credits, job=None, model=None, seconds=None, date=None) 
         print("warning: this reel is now over its credit cap")
     if total_m > cfg["credits_per_month"]:
         print("warning: the month is now over its credit cap")
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["loop-status"]:
+        raise SystemExit(loop_status())
+    print("usage: budget.py loop-status")
+    raise SystemExit(2)
