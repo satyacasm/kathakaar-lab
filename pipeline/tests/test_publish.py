@@ -150,6 +150,22 @@ class PublishTest(unittest.TestCase):
         self.yt.assert_not_called()
         self.assertEqual(self.rec()["status"], "failed")
 
+    def test_changed_final_file_blocks_before_going_public(self):
+        d = self.make()
+        vqueue.update("ep1", final_sha256={"reel_with_song.mp4": publish._sha256(d / "out/final/reel_with_song.mp4")})
+        (d / "out/final/reel_with_song.mp4").write_bytes(b"swapped")
+        self.assertEqual(publish.run_slot(at(12, 31)), "failed")
+        self.yt.assert_not_called()
+        self.ig.assert_not_called()
+        self.assertEqual(self.rec()["status"], "failed")
+        self.assertIn("final file changed since approval", self.inbox.call_args[0][0])
+
+    def test_unchanged_final_file_posts(self):
+        d = self.make()
+        vqueue.update("ep1", final_sha256={f: publish._sha256(d / "out/final" / f)
+                                           for f in ("reel_with_song.mp4", "reel_SILENT.mp4")})
+        self.assertEqual(publish.run_slot(at(12, 31)), "posted")
+
     def _ig_writes_meta(self, d, media_id="M1"):
         def fake(ep, video, on_container=None):
             if on_container:

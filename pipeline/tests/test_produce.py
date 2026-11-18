@@ -107,9 +107,24 @@ class ProduceTest(unittest.TestCase):
         self.assertEqual(self.start(datetime(2026, 11, 19, 6, 5, tzinfo=TZ)), "STOP time")
         self.assertEqual(load(), [])
 
-    def test_start_runs_in_the_evening(self):
-        out = self.start(datetime(2026, 11, 19, 21, 0, tzinfo=TZ))
-        self.assertTrue(out.startswith("START "), out)
+    def test_start_only_inside_the_night_window(self):
+        for h, m in ((0, 29), (12, 0), (21, 0), (23, 59)):
+            self.assertEqual(self.start(datetime(2026, 11, 19, h, m, tzinfo=TZ)), "STOP time", (h, m))
+        self.assertTrue(self.start(datetime(2026, 11, 19, 0, 30, tzinfo=TZ)).startswith("START "))
+
+    def test_run_window_seconds(self):
+        at = lambda h, m: datetime(2026, 11, 19, h, m, tzinfo=TZ)
+        self.assertEqual(produce.window_seconds(at(1, 0)), 5 * 3600)
+        self.assertEqual(produce.window_seconds(at(5, 0)), 3600)
+        self.assertEqual(produce.window_seconds(at(0, 30)), 5 * 3600)
+        for h, m in ((0, 29), (5, 30), (6, 0), (13, 0), (23, 0)):
+            self.assertEqual(produce.window_seconds(at(h, m)), 0, (h, m))
+        with mock.patch.dict(os.environ, {"LOOP_WINDOW_OVERRIDE": "1"}):
+            self.assertEqual(produce.window_seconds(at(13, 0)), 5 * 3600)
+
+    def test_window_override_for_a_rehearsal(self):
+        with mock.patch.dict(os.environ, {"LOOP_WINDOW_OVERRIDE": "1"}):
+            self.assertTrue(self.start(datetime(2026, 11, 19, 15, 0, tzinfo=TZ)).startswith("START "))
 
     def test_start_time_uses_ist_not_system_tz(self):
         from datetime import timezone
@@ -221,6 +236,8 @@ class ProduceTest(unittest.TestCase):
         self.assertEqual(produce.finish(rid), f"READY {rid} YT9")
         r = self.rec(rid)
         self.assertEqual((r["status"], r["yt_id"]), ("preview_ready", "YT9"))
+        self.assertEqual(r["final_sha256"]["reel_with_song.mp4"], produce.sha256(d / "out/final/reel_with_song.mp4"))
+        self.assertIn("reel_SILENT.mp4", r["final_sha256"])
         self.assertTrue((d / "out/qa/frames.png").exists())
         up = next(c for c in self.calls if any(x.endswith("youtube_publish.py") for x in c))
         self.assertEqual(up[-5:], ["publish", rid, "--video", "reel_with_song.mp4", "--preview"])
@@ -307,24 +324,60 @@ class ProduceTest(unittest.TestCase):
 
     def test_fetch_destination_is_restricted(self):
         rid = self.start().split()[1]
+        ok = "https://cdn.higgsfield.ai/a.mp4"
         for dest in ("../x.mp4", "out/final/reel_with_song.mp4", "audio/song.mp3", "/tmp/a.mp4"):
             with self.assertRaises(produce.ProduceError):
-                produce.check_fetch(rid, "https://cdn.example.com/a.mp4", dest)
+                produce.check_fetch(rid, ok, dest)
+        self.assertEqual(produce.check_fetch(rid, ok, "out/hero_raw/c02.mp4"), self.eps / rid / "out/hero_raw/c02.mp4")
+        produce.check_fetch(rid, "https://higgsfield.ai/a.wav", "audio/original_bed.wav")
+
+    def test_url_hosts_are_pinned(self):
+        rid = self.start().split()[1]
+        bad = ("http://cdn.higgsfield.ai/a.mp4", "https://user:pw@cdn.higgsfield.ai/a.mp4",
+               "https://cdn.higgsfield.ai:8443/a.mp4", "https://93.184.216.34/a.mp4", "https://[::1]/a.mp4",
+               "https://localhost/a.mp4", "https://cdn.example.com/a.mp4", "https://higgsfield.ai.evil.com/a.mp4",
+               "https://bucket.s3.amazonaws.com/a.mp4", "file:///etc/passwd")
+        for url in bad:
+            with self.assertRaises(produce.ProduceError, msg=url):
+                produce.check_url(rid, url)
+        self.assertEqual(produce.check_url(rid, "https://d8j0.cloudfront.net.higgsfield.ai/x"),
+                         "d8j0.cloudfront.net.higgsfield.ai")
+
+    def test_allow_host_records_only_recordable_suffixes(self):
+        rid = self.start().split()[1]
         with self.assertRaises(produce.ProduceError):
-            produce.check_fetch(rid, "http://cdn.example.com/a.mp4", "out/hero_raw/c02.mp4")
-        self.assertEqual(produce.check_fetch(rid, "https://cdn.example.com/a.mp4", "out/hero_raw/c02.mp4"),
-                         self.eps / rid / "out/hero_raw/c02.mp4")
-        produce.check_fetch(rid, "https://cdn.example.com/a.wav", "audio/original_bed.wav")
+            produce.allow_host(rid, "https://evil.example.com/x")
+        with self.assertRaises(produce.ProduceError):
+            produce.allow_host(rid, "https://10.0.0.1/x")
+        produce.allow_host(rid, "https://hf-out.s3.us-east-1.amazonaws.com/abc?sig=1")
+        self.assertEqual(self.rec(rid)["fetch_hosts"], ["hf-out.s3.us-east-1.amazonaws.com"])
+        produce.check_url(rid, "https://hf-out.s3.us-east-1.amazonaws.com/other")
+        with self.assertRaises(produce.ProduceError):
+            produce.check_url(rid, "https://other.s3.us-east-1.amazonaws.com/x")
+
+    def test_fetch_refuses_private_resolution(self):
+        rid = self.start().split()[1]
+        with mock.patch.object(produce, "_resolve", return_value=["127.0.0.1"]):
+            with self.assertRaises(produce.ProduceError) as cm:
+                produce.fetch(rid, "https://cdn.higgsfield.ai/a.mp4", "out/hero_raw/c02.mp4")
+        self.assertIn("non-public", str(cm.exception))
+        with mock.patch.object(produce, "_resolve", return_value=["192.168.1.4"]):
+            (self.eps / rid / "out/keyframes").mkdir(parents=True)
+            (self.eps / rid / "out/keyframes/s02.png").write_bytes(b"p")
+            with self.assertRaises(produce.ProduceError):
+                produce.put(rid, "out/keyframes/s02.png", "https://up.higgsfield.ai/x")
 
     def test_put_only_episode_stills(self):
         rid = self.start().split()[1]
         (self.eps / rid / "out/keyframes").mkdir(parents=True)
         (self.eps / rid / "out/keyframes/s02.png").write_bytes(b"p")
-        self.assertEqual(produce.check_put(rid, "out/keyframes/s02.png", "https://up.example.com/x"),
-                         self.eps / rid / "out/keyframes/s02.png")
+        self.assertEqual(produce.check_put(rid, "out/keyframes/s02.png", "https://up.higgsfield.ai/x"),
+                         (self.eps / rid / "out/keyframes/s02.png").resolve())
         for f in ("../../secrets/youtube.json", "episode.json"):
             with self.assertRaises(produce.ProduceError):
-                produce.check_put(rid, f, "https://up.example.com/x")
+                produce.check_put(rid, f, "https://up.higgsfield.ai/x")
+        with self.assertRaises(produce.ProduceError):
+            produce.check_put(rid, "out/keyframes/s02.png", "https://up.example.com/x")
 
     def test_clock_reports_minutes_left(self):
         rid = self.start().split()[1]
@@ -332,11 +385,183 @@ class ProduceTest(unittest.TestCase):
         out = produce.clock(rid, t0 + timedelta(minutes=50))
         self.assertIn("for 50 min of 75 (25 left)", out)
 
-    def test_spend_refuses_over_cap(self):
+    def test_spend_over_cap_still_records_and_reports(self):
         rid = self.start().split()[1]
         self.spend.return_value = (False, "loop cap")
+        out = produce.spend(rid, 3, "job1", NIGHT)
+        self.assertIn("warning: over cap", out)
+        ledger = json.loads((self.eps / "credits.json").read_text())
+        self.assertEqual([(e["episode"], e["credits"], e["n"]) for e in ledger["entries"]], [(rid, 3.0, "audio")])
+        self.assertEqual(self.inbox.call_args[0][1], "failure")
+
+    def test_spend_only_known_purchases(self):
+        rid = self.start().split()[1]
         with self.assertRaises(produce.ProduceError):
+            produce.spend(rid, 3, "job1", NIGHT, what="hero")
+        with self.assertRaises(SystemExit):
+            with mock.patch("sys.stderr"):
+                produce.main(["spend", rid, "3", "--job", "j", "--what", "video"])
+
+    def test_balance_reconciliation_flags_unrecorded_spend(self):
+        root = Path(self.tmp.name)
+        with mock.patch.object(produce, "RUN_FILE", root / "run.json"), \
+                mock.patch.dict(os.environ, {"LOOP_RUN_START": (NIGHT - timedelta(minutes=30)).isoformat()}):
+            produce.run_start_balance(100, NIGHT)
+            rid = self.start().split()[1]
             produce.spend(rid, 3, "job1", NIGHT)
+            self.inbox.reset_mock()
+            self.assertIn("(ok)", produce.run_end_balance(96.5, NIGHT))      # 3.5 drop vs 3 logged: within 1
+            self.inbox.assert_not_called()
+        with mock.patch.object(produce, "RUN_FILE", root / "run2.json"), \
+                mock.patch.dict(os.environ, {"LOOP_RUN_START": (NIGHT - timedelta(minutes=30)).isoformat()}):
+            produce.run_start_balance(100, NIGHT)
+            out = produce.run_end_balance(90, NIGHT)                        # 10 drop vs 3 logged
+            self.assertIn("unrecorded Higgsfield spend", out)
+            self.assertEqual(self.inbox.call_args[0][1], "failure")
+
+    def test_unreconciled_run_is_reported(self):
+        root = Path(self.tmp.name)
+        with mock.patch.object(produce, "RUN_FILE", root / "run.json"):
+            self.assertIsNotNone(produce.check_reconciled("2026-11-19T01:00:00+05:30"))
+            with mock.patch.dict(os.environ, {"LOOP_RUN_START": "2026-11-19T01:00:00+05:30"}):
+                produce.run_start_balance(50, NIGHT)
+            self.assertIn("no run-end", produce.check_reconciled("2026-11-19T01:00:00+05:30"))
+            self.assertIsNone(produce.check_reconciled(None))
+
+    def test_voice_runs_kk_with_fixed_arguments(self):
+        rid = self.start().split()[1]
+        calls = []
+        self.run.side_effect = lambda cmd, **kw: (calls.append([str(c) for c in cmd]),
+                                                  subprocess.CompletedProcess(cmd, 0, "ok", ""))[1]
+        produce.voice(rid, "hindi_takes", takes=3, lines="3,9")
+        produce.voice(rid, "review_takes", pick="3:2")
+        ep = str((self.eps / rid).resolve())
+        self.assertEqual(calls[0][1:], [ep, "hindi_takes", "--takes", "3", "--lines", "3,9"])
+        self.assertEqual(calls[1][1:], [ep, "review_takes", "--takes-dir", "takes_hi", "--out-dir", "review_hi",
+                                        "--pick", "3:2"])
+        self.assertTrue(calls[0][0].endswith("engine/kk.sh"))
+        for bad in (dict(tool="../../x"), dict(tool="gen_takes"), dict(tool="hindi_takes", lines="1;rm"),
+                    dict(tool="hindi_takes", takes=9), dict(tool="review_takes", pick="3:2 --out-dir /tmp")):
+            with self.assertRaises(produce.ProduceError, msg=bad):
+                produce.voice(rid, **bad)
+
+
+FFMPEG_OK = os.path.exists(produce.FFMPEG) and os.path.exists(produce.FFPROBE)
+
+
+@unittest.skipUnless(FFMPEG_OK, "ffmpeg not installed")
+class MediaTest(unittest.TestCase):
+    """The fixed-template ffmpeg wrappers, run for real on generated sources in a temp lab."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name).resolve()
+        self.eps, self.pool = root / "episodes", root / "music-lab/pool"
+        for mod, attr, val in ((vqueue, "QUEUE", root / "queue.json"), (produce, "EPISODES", self.eps),
+                               (produce, "POOL", self.pool), (produce, "LAB", root)):
+            old = getattr(mod, attr)
+            setattr(mod, attr, val)
+            self.addCleanup(setattr, mod, attr, old)
+        self.rid = "001-test"
+        self.ep = self.eps / self.rid
+        (self.ep / "out/final").mkdir(parents=True)
+        (self.pool / "popular").mkdir(parents=True)
+        add(self.rid, {"format": "music", "audio": "popular"}, "manual")
+        transition(self.rid, "producing")
+        ff = lambda *a: subprocess.run([produce.FFMPEG, "-y", "-v", "error", *a], check=True)
+        ff("-f", "lavfi", "-i", "testsrc=size=320x240:rate=10", "-t", "3.2", "-pix_fmt", "yuv420p",
+           str(self.ep / "out/final/reel_with_song.mp4"))
+        ff("-f", "lavfi", "-i", "aevalsrc=if(lt(mod(t\\,0.5)\\,0.03)\\,sin(2*PI*1000*t)\\,0):s=22050",
+           "-t", "12", str(self.pool / "popular/click120.wav"))
+
+    def test_probe(self):
+        d = json.loads(produce.probe(self.rid, "out/final/reel_with_song.mp4"))
+        self.assertAlmostEqual(float(d["format"]["duration"]), 3.2, places=1)
+        self.assertEqual(d["streams"][0]["width"], 320)
+
+    def test_frame_and_sheet(self):
+        out = produce.frame(self.rid, "out/final/reel_with_song.mp4", 1.5)
+        self.assertEqual(out, self.ep / "out/qa/frame_0001.50.png")
+        self.assertTrue(out.exists())
+        self.assertTrue(produce.frames(self.rid).exists())
+
+    def test_inputs_and_outputs_are_confined(self):
+        (self.eps / "002-other/out/final").mkdir(parents=True)
+        (self.eps / "002-other/out/final/x.mp4").write_bytes(b"x")
+        secret = Path(self.tmp.name) / "secret.txt"
+        secret.write_text("token")
+        (self.ep / "out/link.mp4").symlink_to(secret)
+        for rel in ("../002-other/out/final/x.mp4", str(secret), "out/link.mp4", "https://x.higgsfield.ai/a.mp4"):
+            with self.assertRaises(produce.ProduceError, msg=rel):
+                produce.probe(self.rid, rel)
+        with self.assertRaises(produce.ProduceError):
+            produce.frame(self.rid, "../../music-lab/pool/popular/click120.wav", 0)
+        with self.assertRaises(produce.ProduceError):
+            produce._out_path(self.rid, "../002-other/out/final/x.mp4")
+        with self.assertRaises(produce.ProduceError):
+            produce._out_path(self.rid, "out/final/reel_with_song.mp4")
+
+    def test_copy_song_cuts_from_the_pool_only(self):
+        out = produce.copy_song(self.rid, "popular/click120.wav", start=2, dur=4)
+        self.assertEqual(out, self.ep / "audio/song.wav")
+        self.assertAlmostEqual(produce._duration(out), 4.0, places=1)
+        produce.copy_song(self.rid, "music-lab/pool/popular/click120.wav", name="bed")
+        for bad in ("../../episodes/001-test/out/final/reel_with_song.mp4", "/etc/hosts"):
+            with self.assertRaises(produce.ProduceError, msg=bad):
+                produce.copy_song(self.rid, bad)
+        with self.assertRaises(produce.ProduceError):
+            produce.copy_song(self.rid, "popular/click120.wav", name="../../../pipeline/x")
+
+    def test_beats_finds_the_tempo(self):
+        produce.copy_song(self.rid, "popular/click120.wav")
+        g = produce.beats(self.rid, "audio/song.wav")
+        self.assertAlmostEqual(g["bpm"], 120, delta=3)
+        self.assertTrue(all(abs((b - g["beats"][0]) % 0.5) < 0.05 or abs((b - g["beats"][0]) % 0.5 - 0.5) < 0.05
+                            for b in g["beats"]))
+
+
+class KkShTest(unittest.TestCase):
+    """engine/kk.sh validates the tool name and keeps the episode inside episodes/."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.lab = Path(self.tmp.name).resolve()
+        eng = self.lab / "engine"
+        (eng / "voice/.venv/bin").mkdir(parents=True)
+        (eng / "audio").mkdir()
+        (eng / "kk.sh").write_text((Path(PIPELINE).parent / "engine/kk.sh").read_text())
+        (eng / "kk.sh").chmod(0o755)
+        py = eng / "voice/.venv/bin/python"
+        py.write_text('#!/bin/sh\necho "RAN $1 KK_EP=$KK_EP"\n')
+        py.chmod(0o755)
+        (eng / "voice/hindi_takes.py").write_text("")
+        (eng / "audio/dsp.py").write_text("")
+        (self.lab / "episodes/001-a").mkdir(parents=True)
+        (self.lab / "episodes/001-a/x.py").write_text("")
+        (self.lab / "elsewhere").mkdir()
+
+    def kk(self, *args):
+        return subprocess.run(["bash", str(self.lab / "engine/kk.sh"), *args], capture_output=True, text=True)
+
+    def test_known_tool_runs(self):
+        r = self.kk("001-a", "hindi_takes", "--takes", "3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("voice/hindi_takes.py", r.stdout)
+        self.assertIn("KK_EP=" + str(self.lab / "episodes/001-a"), r.stdout)
+
+    def test_rejects_paths_and_unknown_tools(self):
+        for tool in ("../../episodes/001-a/x", "dsp", "x", "hindi_takes.py", "HINDI_TAKES"):
+            r = self.kk("001-a", tool)
+            self.assertNotEqual(r.returncode, 0, tool)
+            self.assertNotIn("RAN", r.stdout, tool)
+
+    def test_rejects_episode_outside_episodes(self):
+        for ep in (str(self.lab / "elsewhere"), "../elsewhere", str(self.lab / "episodes"), "/tmp"):
+            r = self.kk(ep, "hindi_takes")
+            self.assertNotEqual(r.returncode, 0, ep)
+            self.assertNotIn("RAN", r.stdout, ep)
 
 
 if __name__ == "__main__":
