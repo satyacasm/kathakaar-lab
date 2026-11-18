@@ -56,6 +56,24 @@ Never paste a token, secret or JSON file's contents into the Claude chat. Files 
 The app can stay in **Development** mode: an app in development can still post to the accounts that have a role on it,
 which here is your own account.
 
+## B2. Instagram with Unified Login (token starts `EAA`)
+
+Meta's current dashboard (2026) gives a "Business Integration System User Access Token" from **API setup with Unified
+login**. No Facebook Page is needed. The app must belong to a business portfolio.
+
+1. developers.facebook.com → My Apps → Kathakaar Publisher → **Use cases** → "Manage messaging & content on
+   Instagram" → **Customize** → **API setup with Unified login**.
+2. **Configure your app**: open your configuration (or **Create new configuration**) → **Edit permissions** → make sure
+   `instagram_basic`, `instagram_content_publish`, `instagram_manage_comments` and **`instagram_manage_insights`** are
+   on (ads permissions can stay off) → **Use this configuration** → **Save**. The preview shows the token expiry: pick
+   the longest/never option offered.
+3. **Generate access tokens** → **Add account** → log in as Kathakaar (accept the Instagram Tester invite if asked:
+   instagram.com → Settings → Website permissions → Apps and websites → Tester Invites) → **Generate token** → copy.
+   It is shown only once.
+4. In **Terminal.app**: `~/kathakaar-lab/pipeline/instagram_publish.py setup`, paste the token (no app secret needed).
+   It lists missing permissions and the assigned Instagram account. Then here:
+   `! ~/kathakaar-lab/pipeline/instagram_publish.py check`.
+
 ## How publishing works afterwards
 Only after you say **"publish"** for an episode, Claude runs:
 - `pipeline/youtube_publish.py publish <episode> --yes-publish [--privacy public] [--publish-at <time>]`
