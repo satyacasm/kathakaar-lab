@@ -7,6 +7,10 @@ Credentials live in ~/kathakaar-lab/secrets/ (chmod 600) and are never printed:
 
   setup                       open the Google consent page in the browser (loopback + PKCE), save the refresh token
   check                       show the channel the token posts to, and test read access to YouTube Analytics
+  privacy <video_id> <private|public>   switch a video's privacy (after approval)
+  delete <video_id>                     delete a video (already gone counts as done)
+  publish <episode> --preview           private upload for Satyam to watch (no --yes-publish); logs
+                                        published.youtube_preview and prints preview_id=<id>
   publish <episode> --yes-publish [--privacy private|unlisted|public] [--publish-at 2026-11-08T18:30:00+05:30]
           [--video short-hi.mp4] [--synthetic] [--dry-run]
                               upload out/final/<video> with the Hindi title, description and tags from
@@ -64,16 +68,25 @@ def scrub(text: str) -> str:
     return text
 
 
-def http(method: str, url: str, body: bytes | None = None, headers: dict | None = None, raw: bool = False):
+class YTError(Exception):
+    """An HTTP error from Google; main() prints it and exits, library callers can catch it."""
+
+    def __init__(self, code: int, body: str, url: str = ""):
+        self.code, self.body, self.url = code, body, url
+        super().__init__(f"HTTP {code} from {url.split('?')[0]}: {body}" if url else f"HTTP {code}: {body}")
+
+
+def http(method: str, url: str, body: bytes | None = None, headers: dict | None = None, raw: bool = False,
+         timeout: int = 600):
     req = urllib.request.Request(url, data=body, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=600) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             data = r.read()
             return (r, data) if raw else (json.loads(data) if data else {})
     except urllib.error.HTTPError as e:
         if raw and e.code == 308:              # resumable upload: "resume incomplete"
             return e, b""
-        sys.exit(f"HTTP {e.code} from {url.split('?')[0]}: {scrub(e.read().decode(errors='replace'))[:800]}")
+        raise YTError(e.code, scrub(e.read().decode(errors="replace"))[:800], url) from None
 
 
 def save(path: Path, data: dict) -> None:
@@ -269,14 +282,61 @@ def upload_caption(video_id: str, lang: str, name: str, srt: Path) -> str:
     return r["id"]
 
 
+# ------------------------------------------------------------------ privacy / delete
+PRIVACIES = ("private", "unlisted", "public")
+
+
+def video_exists(video_id: str) -> bool:
+    """True iff the channel's API returns the video. Short timeout; raises YTError / URLError on failure."""
+    q = urllib.parse.urlencode({"part": "status", "id": video_id})
+    r = http("GET", f"{API}/videos?{q}", headers=auth_headers(), timeout=15)
+    return len(r.get("items", [])) == 1
+
+
+def set_privacy(video_id: str, privacy: str) -> str:
+    if privacy not in PRIVACIES:
+        raise ValueError(f"privacy must be one of {PRIVACIES}, got {privacy!r}")
+    body = {"id": video_id, "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False, "embeddable": True}}
+    r = http("PUT", f"{API}/videos?part=status", json.dumps(body).encode(),
+             auth_headers({"Content-Type": "application/json; charset=UTF-8"}))
+    return r.get("status", {}).get("privacyStatus", privacy)
+
+
+def delete_video(video_id: str) -> None:
+    """videos.delete; already gone (404) counts as done."""
+    try:
+        http("DELETE", f"{API}/videos?{urllib.parse.urlencode({'id': video_id})}", headers=auth_headers())
+    except YTError as e:
+        if e.code != 404:
+            raise
+
+
+def cmd_privacy(a):
+    print(f"{a.video_id}: privacy now {set_privacy(a.video_id, a.privacy)}")
+
+
+def cmd_delete(a):
+    delete_video(a.video_id)
+    print(f"{a.video_id}: deleted")
+
+
+def rel(path: Path) -> Path:
+    try:
+        return path.relative_to(LAB)
+    except ValueError:
+        return path
+
+
 def cmd_publish(a):
     ep = Path(a.episode)
     ep = ep if ep.is_dir() else LAB / "episodes" / a.episode
     info = json.loads((ep / "episode.json").read_text())
     video = ep / "out/final" / a.video
     if not video.exists():
-        sys.exit(f"missing {video.relative_to(LAB)}: render it first (engine/render.sh)")
+        sys.exit(f"missing {rel(video)}: render it first (engine/render.sh)")
     m = metadata(ep)
+    if a.preview:                          # a private upload for Satyam to watch: not publishing
+        a.privacy, a.publish_at = "private", None
     status = {"privacyStatus": a.privacy, "selfDeclaredMadeForKids": False, "embeddable": True,
               "containsSyntheticMedia": bool(a.synthetic)}
     if a.publish_at:
@@ -287,14 +347,14 @@ def cmd_publish(a):
             "localizations": {"en": {"title": m["title_en"], "description": m["description_en"]}}}
     caps = [(lang, name, ep / "out/package" / f"captions_{lang}.srt") for lang, name in (("hi", "Hindi"), ("en", "English"))]
     caps = [c for c in caps if c[2].exists()]
-    print(f"episode {info['id']}: {video.relative_to(LAB)} ({video.stat().st_size / 1e6:.1f} MB)")
+    print(f"episode {info['id']}: {rel(video)} ({video.stat().st_size / 1e6:.1f} MB)")
     print(f"  privacy {status['privacyStatus']}" + (f", goes public at {a.publish_at}" if a.publish_at else "")
           + f"; synthetic-content label {'on' if a.synthetic else 'off'}; {len(m['tags'])} tags")
     print(f"  captions: {', '.join(c[0] for c in caps) or 'none'}; localization: en")
     if a.dry_run:
         print("dry run: nothing uploaded")
         return
-    if not a.yes_publish:
+    if not a.yes_publish and not a.preview:
         sys.exit("refusing to upload without --yes-publish (only after Satyam said \"publish\" for this episode)")
     vid = upload_video(video, body)
     url = f"https://www.youtube.com/shorts/{vid}" if info.get("format") == "short" else f"https://youtu.be/{vid}"
@@ -304,10 +364,18 @@ def cmd_publish(a):
         upload_caption(vid, lang, name, srt)
         done.append(lang)
         print(f"  captions {lang} added")
-    info.setdefault("published", {})["youtube"] = {
-        "id": vid, "url": url, "privacy": status["privacyStatus"], "publish_at": a.publish_at,
-        "captions": done, "uploaded": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if a.preview:
+        info.setdefault("published", {})["youtube_preview"] = {"id": vid, "url": url, "uploaded": stamp}
+    else:
+        info.setdefault("published", {})["youtube"] = {
+            "id": vid, "url": url, "privacy": status["privacyStatus"], "publish_at": a.publish_at,
+            "captions": done, "uploaded": stamp}
     (ep / "episode.json").write_text(json.dumps(info, ensure_ascii=False, indent=1) + "\n")
+    if a.preview:
+        print("logged as published.youtube_preview in episode.json (private; make it public with `privacy`)")
+        print(f"preview_id={vid}")
+        return
     print("logged in episode.json. If the project isn't audited yet, YouTube keeps the video private: check Studio.")
 
 
@@ -324,9 +392,21 @@ def main():
     p.add_argument("--synthetic", action="store_true", help="tick YouTube's altered/synthetic content label")
     p.add_argument("--yes-publish", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--preview", action="store_true",
+                   help="private upload for Satyam to watch; logs published.youtube_preview; needs no --yes-publish")
     p.set_defaults(f=cmd_publish)
+    p = sub.add_parser("privacy")
+    p.add_argument("video_id")
+    p.add_argument("privacy", choices=["private", "public"])
+    p.set_defaults(f=cmd_privacy)
+    p = sub.add_parser("delete")
+    p.add_argument("video_id")
+    p.set_defaults(f=cmd_delete)
     a = ap.parse_args()
-    a.f(a)
+    try:
+        a.f(a)
+    except YTError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":
