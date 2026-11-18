@@ -33,3 +33,21 @@ so anything not allow-listed is denied without prompting. Allowed: Read, Glob, G
 `pipeline/loop/inbox.py *`; Edit (which covers Write) only under `ideas/**`. Denied: raw `sqlite3` (its `.shell` dot-command runs arbitrary commands; comments are untrusted input), curl, git, rm, web tools, reading `secrets/`.
 WebFetch, WebSearch, git, rm and MCP servers are off. It never publishes, edits code or commits. 30 min timeout.
 Note: `features.py`, `analytics.py yt map --set` and `review.py` write under `cache/` and `episodes/` by design.
+
+## Queue
+`pipeline/loop/vqueue.py` (not `queue.py`, which would shadow the stdlib module) holds every video's state in
+`cache/loop/queue.json` (git-ignored; atomic writes under an flock on `queue.json.lock`).
+
+Statuses: `planned -> producing -> preview_ready -> approved -> posted`, with `rejected` (from preview_ready) and
+`failed` (from planned/producing/approved; `requeue` sends it back to planned). Any other jump raises an error.
+Slots are 12:30 and 19:30 Asia/Kolkata; `approve` gives each video the next free slot and refuses unless the
+private YouTube preview still exists. A video later than 2 h past its slot is no longer due. Nothing is public
+without an approve.
+
+```
+python3 pipeline/loop/vqueue.py list [--all]
+python3 pipeline/loop/vqueue.py show <id>
+python3 pipeline/loop/vqueue.py approve <id>...      # prints each slot in IST
+python3 pipeline/loop/vqueue.py reject <id> --reason "slow hook"
+python3 pipeline/loop/vqueue.py requeue <id>
+```
