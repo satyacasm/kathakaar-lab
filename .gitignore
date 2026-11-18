@@ -40,3 +40,6 @@ __pycache__/
 *.mp4
 *.mov
 secrets/
+
+# Design docs and plans
+!/docs/
