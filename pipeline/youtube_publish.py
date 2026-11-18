@@ -115,7 +115,10 @@ def access_token() -> str:
         return t["access_token"]
     body = urllib.parse.urlencode({"client_id": c["client_id"], "client_secret": c["client_secret"],
                                    "refresh_token": t["refresh_token"], "grant_type": "refresh_token"}).encode()
-    r = http("POST", TOKEN_URL, body, {"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        r = http("POST", TOKEN_URL, body, {"Content-Type": "application/x-www-form-urlencoded"})
+    except YTError as e:                   # a dead token is fatal for every caller, as it always was
+        sys.exit(str(e))
     t.update(access_token=r["access_token"], expires_at=time.time() + int(r.get("expires_in", 3600)))
     REDACT.append(r["access_token"])
     save(TOKEN, t)

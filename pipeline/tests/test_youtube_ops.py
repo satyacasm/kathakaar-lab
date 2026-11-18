@@ -1,4 +1,4 @@
-import argparse, io, json, os, sys, tempfile, unittest
+import argparse, io, json, os, sys, tempfile, unittest, urllib.error, urllib.request
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -123,6 +123,46 @@ class YoutubeOpsTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     yt.cmd_publish(a)
             up.assert_not_called()
+
+
+class TokenRefreshFailureTest(unittest.TestCase):
+    """R3: a dead refresh token stays a clean SystemExit for yt.access_token() and every importer."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name)
+        (d / "client.json").write_text(json.dumps({"installed": {"client_id": "cid", "client_secret": "SEKRET"}}))
+        (d / "token.json").write_text(json.dumps({"refresh_token": "RT", "expires_at": 0}))
+        for name, val in (("CLIENT", d / "client.json"), ("TOKEN", d / "token.json")):
+            p = mock.patch.object(yt, name, val)
+            p.start()
+            self.addCleanup(p.stop)
+        p = mock.patch.object(yt, "REDACT", [])
+        p.start()
+        self.addCleanup(p.stop)
+        err = urllib.error.HTTPError(yt.TOKEN_URL, 400, "bad", {}, io.BytesIO(b"invalid_grant SEKRET"))
+        p = mock.patch.object(urllib.request, "urlopen", side_effect=err)
+        self.urlopen = p.start()
+        self.addCleanup(p.stop)
+
+    def test_access_token_refresh_failure_exits_scrubbed(self):
+        with self.assertRaises(SystemExit) as cm:
+            yt.access_token()
+        msg = str(cm.exception.code)
+        self.assertIn("HTTP 400", msg)
+        self.assertNotIn("SEKRET", msg)
+
+    def test_analytics_pull_exits_cleanly(self):
+        import analytics
+        a = argparse.Namespace(video=None)
+        with mock.patch.object(analytics, "db", return_value=mock.MagicMock()), \
+             mock.patch.object(analytics, "load_episodes", return_value=[]), \
+             mock.patch.object(analytics, "effective_map", return_value={}):
+            with self.assertRaises(SystemExit) as cm:
+                analytics.cmd_pull(a)
+        self.assertNotIn("SEKRET", str(cm.exception.code))
+        self.assertGreaterEqual(self.urlopen.call_count, 1)
 
 
 if __name__ == "__main__":
