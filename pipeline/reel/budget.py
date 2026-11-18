@@ -67,13 +67,22 @@ def loop_spent(month: str, loop_ids, ledger=None) -> float:
                if str(e.get("date", "")).startswith(month) and e.get("episode") in loop_ids)
 
 
-def can_spend(amount: float, month: str, loop_ids, ledger=None) -> tuple[bool, str]:
-    """(ok, reason). Blocked if the loop cap or the global monthly cap would be exceeded."""
+def loop_cap_problem(amount: float, month: str, loop_ids, ledger=None) -> str | None:
+    """Reason string if spending `amount` would exceed the loop cap, else None."""
     ledger = ledger if ledger is not None else _default_ledger()
     cap = loop_cap(month)
     spent = loop_spent(month, loop_ids, ledger)
     if spent + amount > cap + 1e-9:
-        return False, f"loop cap: {spent:g} spent + {amount:g} > {cap:g} for {month}"
+        return f"loop cap: {spent:g} spent + {amount:g} > {cap:g} for {month}"
+    return None
+
+
+def can_spend(amount: float, month: str, loop_ids, ledger=None) -> tuple[bool, str]:
+    """(ok, reason). Blocked if the loop cap or the global monthly cap would be exceeded."""
+    ledger = ledger if ledger is not None else _default_ledger()
+    why = loop_cap_problem(amount, month, loop_ids, ledger)
+    if why:
+        return False, why
     gcap = S.load_config()["credits_per_month"]
     gspent = month_spent(ledger, month)
     if gspent + amount > gcap + 1e-9:
@@ -86,13 +95,10 @@ def queue_ids() -> set:
     loop_dir = str(Path(__file__).resolve().parents[1] / "loop")
     if loop_dir not in sys.path:
         sys.path.insert(0, loop_dir)
-    try:
-        import vqueue
-        if not vqueue.QUEUE.exists():
-            return set()
-        return {r["id"] for r in vqueue.load()}
-    except ImportError:
+    import vqueue                               # a broken vqueue must fail loudly, not disable the cap
+    if not vqueue.QUEUE.exists():
         return set()
+    return {r["id"] for r in vqueue.load()}
 
 
 def loop_status(today=None) -> int:
@@ -193,8 +199,8 @@ def hero_plan(ep_dir) -> int:
     probs = cap_problems(sm)
     ids = queue_ids()
     if ep.name in ids:                          # loop videos also answer to the loop cap
-        ok, why = can_spend(sm["pending_total"], sm["month"], ids, load_ledger(ep))
-        if not ok:
+        why = loop_cap_problem(sm["pending_total"], sm["month"], ids, load_ledger(ep))
+        if why:                                 # the global cap is already reported by cap_problems
             probs.append(why)
     for m in probs:
         print("REFUSED:", m)
