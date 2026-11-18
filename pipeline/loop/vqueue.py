@@ -6,6 +6,7 @@
   vqueue.py show <id>                    full record as JSON
   vqueue.py approve <id>...              preview_ready -> approved, each gets the next free IST slot
                                          (refused unless the private YouTube preview still exists)
+  vqueue.py rejections --since YYYY-MM-DD  rejected on/after the date: date | id | format / audio | reason
   vqueue.py reject <id> --reason "..."   preview_ready -> rejected, reason stored on one line
   vqueue.py requeue <id>                 failed -> planned
 
@@ -14,7 +15,7 @@ Slots are 12:30 and 19:30 Asia/Kolkata. Nothing is public without an approve. Th
 (git-ignored); writes are atomic and serialised by an flock on queue.json.lock.
 """
 import argparse, contextlib, fcntl, json, os, re, sys, tempfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -200,6 +201,22 @@ def due(now: datetime) -> dict | None:
     return min(ok, key=lambda r: r["slot"]) if ok else None
 
 
+def rejections_since(day: date) -> list[dict]:
+    """Rejected records whose (last) rejection happened on or after `day` (IST), oldest first,
+    each a copy with `rejected_on` (YYYY-MM-DD) added."""
+    out = []
+    for r in load():
+        if r["status"] != "rejected":
+            continue
+        stamps = [h[0] for h in r["history"] if h[1] == "rejected"]
+        if not stamps:
+            continue
+        when = datetime.fromisoformat(stamps[-1]).astimezone(TZ).date()
+        if when >= day:
+            out.append({**r, "rejected_on": when.isoformat()})
+    return sorted(out, key=lambda r: r["rejected_on"])
+
+
 def _ist(iso):
     return datetime.fromisoformat(iso).astimezone(TZ).strftime("%a %d %b %H:%M IST") if iso else "-"
 
@@ -211,6 +228,7 @@ def main(argv=None):
     sub.add_parser("show").add_argument("id")
     sub.add_parser("approve").add_argument("ids", nargs="+", metavar="id")
     r = sub.add_parser("reject"); r.add_argument("id"); r.add_argument("--reason", required=True)
+    rj = sub.add_parser("rejections"); rj.add_argument("--since", required=True, metavar="YYYY-MM-DD")
     sub.add_parser("requeue").add_argument("id")
     args = ap.parse_args(argv)
     try:
@@ -227,6 +245,10 @@ def main(argv=None):
                 raise QueueError("youtube_publish.video_exists is not available yet; cannot verify the private preview")
             for rec in approve(args.ids, _now(), exists):
                 print(f"approved {rec['id']} -> {_ist(rec['slot'])}")
+        elif args.cmd == "rejections":
+            for rec in rejections_since(date.fromisoformat(args.since)):
+                c = rec["cell"]
+                print(f"{rec['rejected_on']} | {rec['id']} | {c.get('format')} / {c.get('audio')} | {rec['reason']}")
         elif args.cmd == "reject":
             print(f"rejected {reject(args.id, args.reason)['id']}")
         else:

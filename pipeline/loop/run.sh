@@ -80,11 +80,21 @@ job_review() {
   command -v claude >/dev/null || { echo "claude CLI not on PATH"; return 1; }
   # Sandbox: dontAsk = anything not allow-listed is denied (no prompts in headless mode). No web, no git, no MCP.
   # 1800 s timeout via perl alarm (no gtimeout on stock macOS); alarm survives exec.
+  # No Glob/Grep (they cannot be path-scoped): the run's facts are appended to the prompt instead of globbed.
+  local today pack trends
+  today="$(date +%Y-%m-%d)"
+  pack="$(ls -1 "$LAB"/cache/analytics/review/pack_*.md 2>/dev/null | tail -n 1)"
+  trends="$(ls -1 "$LAB"/ideas/trends-*.md 2>/dev/null | tail -n 1)"
+  local facts
+  facts="$(printf '\n## This run\n- Today: %s\n- Newest pack: %s\n- Newest trends digest: %s\n' \
+    "$today" "${pack#"$LAB"/}" "${trends#"$LAB"/}")"
   perl -e 'alarm shift; exec @ARGV' 1800 \
-    claude -p "$(cat "$prompt_file")" \
+    claude -p "$(cat "$prompt_file")$facts" \
       --model claude-sonnet-5-5 \
       --permission-mode dontAsk \
-      --allowedTools "Read" "Glob" "Grep" \
+      --allowedTools \
+        "Read(episodes/**)" "Read(ideas/**)" "Read(cache/analytics/review/**)" "Read(cache/analytics/thumbs/**)" \
+        "Read(pipeline/**)" "Read(music-lab/**)" "Read(brand/**)" \
         "Bash(python3 pipeline/features.py *)" \
         "Bash(python3 pipeline/analytics.py yt map*)" \
         "Bash(python3 pipeline/analytics.py yt status*)" \
@@ -93,8 +103,12 @@ job_review() {
         "Bash(python3 pipeline/review.py *)" \
         "Bash(python3 pipeline/trends.py digest*)" \
         "Bash(python3 pipeline/loop/inbox.py *)" \
+        "Bash(python3 pipeline/loop/plan.py *)" \
+        "Bash(python3 pipeline/loop/vqueue.py list*)" \
+        "Bash(python3 pipeline/loop/vqueue.py rejections*)" \
         "Edit(ideas/**)" \
-      --disallowedTools "WebFetch" "WebSearch" "Bash(git *)" "Bash(rm *)" "Bash(sqlite3 *)" "Bash(curl *)" "Read(secrets/**)" "Read(~/.ssh/**)" \
+      --disallowedTools "WebFetch" "WebSearch" "Bash(git *)" "Bash(rm *)" "Bash(sqlite3 *)" "Bash(curl *)" \
+        "Read(secrets/**)" "Read(/$LAB/secrets/**)" "Read(~/.ssh/**)" "Read(~/.config/**)" "Read(~/.aws/**)" \
       --strict-mcp-config \
       --no-session-persistence \
       --output-format text < /dev/null

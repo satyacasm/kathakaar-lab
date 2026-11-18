@@ -1,5 +1,5 @@
 import multiprocessing, os, sys, tempfile, unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -92,6 +92,33 @@ class TestQueue(QueueTestBase):
         self.assertNotIn("\n", r["reason"])
         self.assertTrue(r["reason"].startswith("slow hook"))
         self.assertNotIn(" | ", r["reason"])
+
+    def _rejected_on(self, rid, iso):
+        self.make(rid)
+        reject(rid, "weak hook")
+        recs = load()
+        for r in recs:
+            if r["id"] == rid:
+                r["history"][-1][0] = iso
+        save(recs)
+
+    def test_rejections_since(self):
+        self._rejected_on("old", "2026-11-10T10:00:00+05:30")
+        self._rejected_on("new", "2026-11-17T10:00:00+05:30")
+        self.make("kept")  # not rejected: never returned
+        got = vqueue.rejections_since(date(2026, 11, 12))
+        self.assertEqual([r["id"] for r in got], ["new"])
+        self.assertEqual(got[0]["reason"], "weak hook")
+        self.assertEqual(got[0]["rejected_on"], "2026-11-17")
+        self.assertEqual([r["id"] for r in vqueue.rejections_since(date(2026, 11, 10))], ["old", "new"])
+
+    def test_rejections_cli(self):
+        import io, contextlib
+        self._rejected_on("new", "2026-11-17T10:00:00+05:30")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vqueue.main(["rejections", "--since", "2026-11-12"])
+        self.assertEqual(buf.getvalue().strip(), "2026-11-17 | new | f / a | weak hook")
 
     def test_one_line(self):
         self.assertEqual(one_line("## - [x]  hi\n there"), "x] hi there")
