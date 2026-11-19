@@ -48,6 +48,25 @@ class TestAsk(unittest.TestCase):
         self.assertEqual(ask._title("a"), "Hello Title")
         self.assertEqual(ask._title("missing"), "missing")
 
+    def test_grammar(self):
+        self.assertTrue(ask.compose([rec("a")]).startswith("1 video awaits your approval:"))
+        self.assertTrue(ask.compose([rec("a"), rec("b")]).startswith("2 videos await your approval:"))
+
+    def test_caption_first_line_sanitized_and_truncated(self):
+        pkg = Path(self.tmp.name) / "a" / "out" / "package"
+        pkg.mkdir(parents=True)
+        (pkg / "caption_instagram.txt").write_text("\n  Shiva · drinks ‖ the | poison  " + "x" * 100 + "\n#tags\n")
+        cap = ask._caption("a")
+        self.assertLessEqual(len(cap), 80)
+        self.assertTrue(cap.startswith("Shiva drinks the poison x"))
+        self.assertTrue(cap.endswith("…"))
+        for sep in ("·", "‖", "|", "\n"):
+            self.assertNotIn(sep, cap)
+        out = ask.compose([rec("a")], multiline=False)
+        self.assertIn("caption: Shiva drinks the poison", out)
+        self.assertEqual(ask._caption("missing"), "")
+        self.assertNotIn("caption:", ask.compose([rec("missing")]))
+
     def test_run_no_duplicate_same_set(self):
         with mock.patch.object(ask.inbox, "add") as add, mock.patch.object(ask.vqueue, "load", return_value=[rec("a")]):
             self.assertTrue(ask.run(self.now))

@@ -38,6 +38,17 @@ def _title(rid):
         return rid
 
 
+def _caption(rid, n=80):
+    """First non-empty line of the Instagram caption, one line, at most n chars, with no `·`/`‖` separators."""
+    try:
+        text = (EPISODES / rid / "out/package/caption_instagram.txt").read_text()
+    except (OSError, ValueError):
+        return ""
+    line = next((l for l in text.splitlines() if l.strip()), "")
+    line = " ".join(line.replace("·", " ").replace("‖", " ").replace("|", " ").split())
+    return line if len(line) <= n else line[:n - 1] + "…"
+
+
 def _ready(records):
     return [r for r in records if r.get("status") == "preview_ready"]
 
@@ -46,8 +57,9 @@ def _item(r):
     cell = r.get("cell") or {}
     ig = "by hand" if r.get("ig_mode") == "manual" else "api"
     link = f"https://youtu.be/{r['yt_id']} (private)" if r.get("yt_id") else "no YouTube link"
+    cap = _caption(r["id"])
     return (f"{r['id']} · {cell.get('format', '?')}/{cell.get('audio', '?')} · {_title(r['id'])} · {link}"
-            f" · IG: {ig} · {r.get('credits', 0)} credits")
+            f" · IG: {ig}" + (f" · caption: {cap}" if cap else "") + f" · {r.get('credits', 0)} credits")
 
 
 def compose(records, multiline=True):
@@ -55,7 +67,7 @@ def compose(records, multiline=True):
     if not ready:
         return None
     items = [_item(r) for r in ready]
-    head = f"{len(ready)} video{'s' if len(ready) != 1 else ''} await your approval"
+    head = "1 video awaits your approval" if len(ready) == 1 else f"{len(ready)} videos await your approval"
     if multiline:
         return "\n".join([head + ":", *items, "", "Approve: " + APPROVE, "Reject: " + REJECT])
     return f"{head}: " + " ‖ ".join(items) + f" ‖ Approve: {APPROVE} · Reject: {REJECT}"
