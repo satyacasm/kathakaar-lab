@@ -101,9 +101,18 @@ pipeline/loop/uninstall.sh # or remove the launchd agents altogether
 `run.sh status` prints PAUSED while the file exists. An already-running job is not interrupted.
 
 ## Security notes
-- The producer runs headless Claude in `--permission-mode dontAsk` inside a Bash sandbox (seatbelt): reads limited to
-  the lab's working folders, writes denied on `pipeline/`, `engine/`, `brand/`, `secrets/`, `.git`; network limited to an
-  allowlist of hosts (Pixabay, Higgsfield media, Hugging Face); no git, no raw sqlite3, no reading `secrets/`, no posting.
+- The producer runs headless Claude in `--permission-mode dontAsk` inside a Bash sandbox (seatbelt), configured in
+  `pipeline/loop/sandbox_settings.py`: the home folder is read-denied; the lab (the working directory: Python's
+  getcwd() must open it) and the uv Python, Hugging Face model and font folders are allowed back; inside the lab
+  `secrets/`, `.git`, `.claude`, `.remember`, `downloads/`, `archive/` are denied again (a deny inside an allow wins).
+  `secrets/`, `~/.ssh` and the Hugging Face token are also `credentials.files` denies, which no allowRead re-opens.
+  Writes denied on `pipeline/`, `engine/`, `brand/`, `sources/`, `secrets/`, `.git`; network limited to an allowlist
+  of hosts (Pixabay, Higgsfield media, Hugging Face); no git, no raw sqlite3, no posting.
+- Metal (MLX, mflux) cannot work inside the seatbelt sandbox (no GPU IOKit access, not configurable), so the two GPU
+  stages run outside it as `excludedCommands`: `produce.py voice ...` and `reel.py <id> stills [--only N|--force]`,
+  next to `produce.py finish ...` (secrets + YouTube). They are fixed code the producer cannot edit and still need
+  their allowlist entry; any other command, a compound with `cd`, `$(...)` or a redirect stays sandboxed. Run the
+  stills stage on its own: `reel.py <id> all` would run stills inside the sandbox and fail.
 - The review job is allowlisted the same way (see above). Comments and web text are untrusted input.
 - Residual risk (accepted): WebFetch is unrestricted for the producer (research needs arbitrary sites) and it can read
   `ideas/` (LEARNINGS, the INBOX with private preview ids). A prompt injection in a fetched page could make a run send
@@ -121,15 +130,17 @@ for `cache/loop/REHEARSAL_OK`; `--dry-run` still prints all eight). Rehearse in 
 LOOP_WINDOW_OVERRIDE=1 LOOP_MAX_VIDEOS=1 pipeline/loop/run.sh produce
 ```
 It must verify, from the log (`cache/loop/logs/produce-<YYYY-MM>.log`) and the result:
-1. The Bash sandbox (seatbelt) lets the stages work: mflux/MLX stills (Metal), the voice venv, ffmpeg; nothing needs
-   a path outside the allowRead list.
+1. The Bash sandbox (seatbelt) lets the stages work: mflux/MLX stills and the voice venv (Metal, both run as
+   excludedCommands), ffmpeg/onnxruntime motion inside the sandbox; nothing needs a path outside the allowRead list.
+   Probed 2026-11-19 (cache/loop/sandbox-fix-report.md): every helper starts from the lab root, a real stills run
+   used Metal, secrets/ and ~/.ssh are unreadable.
 2. `--permission-mode dontAsk` read scope: every Read the prompt needs is allowed (no silent denials in the log).
 3. `excludedCommands` matches `produce.py finish ...` even when Claude writes it as part of a compound command
    (`cd ... && python3 ...`); the private upload succeeds.
 4. The Higgsfield MCP tool names in the allowlist are the ones the connector really exposes (a wrong name = denied).
 5. The Higgsfield upload/result hosts actually used, read from the sandbox network log: then replace the broad
    `*.amazonaws.com`, `*.cloudfront.net`, `*.r2.cloudflarestorage.com`, `storage.googleapis.com` entries in
-   `produce_settings` (run.sh) with those exact hosts.
+   `ALLOWED_DOMAINS` (pipeline/loop/sandbox_settings.py) with those exact hosts.
 6. The video ends `preview_ready` with a private YouTube link, nothing public, credits recorded.
 When all pass: `touch cache/loop/REHEARSAL_OK`, then install.
 

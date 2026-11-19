@@ -38,6 +38,8 @@ in the morning. You run from the lab root (`~/kathakaar-lab`). Every command bel
 - Time: each video gets **75 minutes**. Check with `produce.py clock <id>` at every step boundary. If a video passes
   75 minutes, finish it only if you are at step 8 or later; otherwise fail it (step 10). The whole run is cut off at
   06:00 IST; anything unfinished then is marked failed automatically.
+  Only `start` decides whether the night is over (`STOP time`): a supervised rehearsal runs in the daytime, so never
+  skip or stop on your own reading of the clock.
 
 ## Your commands (all relative to the lab root; `P` = `python3 pipeline/loop/produce.py`)
 

@@ -141,39 +141,8 @@ produce_window() {  # seconds the producer may run now: 0 outside 00:30-05:30 IS
   python3 pipeline/loop/produce.py window-seconds
 }
 
-produce_settings() {  # --settings JSON: Bash sandbox (seatbelt) with file and network limits
-  python3 - "$LAB" "$HOME" <<'PY'
-import json, os, sys
-lab, home = sys.argv[1], sys.argv[2]
-both = lambda paths: sorted({q for p in paths for q in (p, os.path.realpath(p))})   # symlinked data dirs too
-print(json.dumps({"sandbox": {
-    "enabled": True, "failIfUnavailable": True,
-    "autoAllowBashIfSandboxed": False,          # the allowlist still decides what may run
-    "allowUnsandboxedCommands": False,          # no dangerouslyDisableSandbox escape
-    # the private upload needs secrets/ and the YouTube API; the command is fixed and allow-listed
-    "excludedCommands": ["python3 pipeline/loop/produce.py finish *"],
-    "network": {"allowedDomains": [
-        "pixabay.com", "cdn.pixabay.com",                                  # library music (audio_pool fetch)
-        "higgsfield.ai", "*.higgsfield.ai", "*.amazonaws.com", "*.cloudfront.net",
-        "*.r2.cloudflarestorage.com", "storage.googleapis.com",          # Higgsfield media (produce fetch/put)
-        "huggingface.co", "*.huggingface.co", "*.hf.co"]},                 # model cache revalidation (read only)
-    # Reads: deny the whole home folder, then allow back only what the stages read (the lab's working folders, the
-    # uv Python + tools behind the venvs and mflux, Hugging Face model files, fonts). secrets/, ~/.ssh, credentials,
-    # shell history, keychains, browser profiles and ~/.cache/huggingface/token stay unreadable. Writes: the lab (cwd)
-    # minus code and secrets, plus the Hugging Face model cache only.
-    "filesystem": {
-        "denyRead": both([home, f"{lab}/secrets", f"{home}/.cache/huggingface/token",
-                          f"{home}/.cache/huggingface/stored_tokens"]),
-        "allowRead": both([f"{lab}/{p}" for p in ("episodes", "ideas", "music-lab", "sources", "brand", "pipeline",
-                                                  "engine", "models", "cache", "tmp", "tools", "vendor",
-                                                  "ASSETS.md", "PIPELINE.md")]
-                          + [f"{home}/.local/share/uv", f"{home}/.local/bin", f"{home}/.cache/huggingface/hub",
-                             f"{home}/.cache/huggingface/xet", f"{home}/Library/Fonts"]),
-        "denyWrite": both([f"{lab}/{p}" for p in ("pipeline", "engine", "brand", "sources", "secrets", ".git",
-                                                  ".claude", "PIPELINE.md", "CLAUDE.md")]),
-        "allowWrite": [f"{home}/.cache/huggingface/hub", f"{home}/.cache/huggingface/xet"]},
-}}))
-PY
+produce_settings() {  # --settings JSON: Bash sandbox (seatbelt) with file and network limits (see sandbox_settings.py)
+  python3 pipeline/loop/sandbox_settings.py "$LAB" "$HOME"
 }
 
 job_produce() {
