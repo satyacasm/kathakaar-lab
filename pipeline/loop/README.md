@@ -99,11 +99,37 @@ pipeline/loop/uninstall.sh # or remove the launchd agents altogether
   the lab's working folders, writes denied on `pipeline/`, `engine/`, `brand/`, `secrets/`, `.git`; network limited to an
   allowlist of hosts (Pixabay, Higgsfield media, Hugging Face); no git, no raw sqlite3, no reading `secrets/`, no posting.
 - The review job is allowlisted the same way (see above). Comments and web text are untrusted input.
+- Residual risk (accepted): WebFetch is unrestricted for the producer (research needs arbitrary sites) and it can read
+  `ideas/` (LEARNINGS, the INBOX with private preview ids). A prompt injection in a fetched page could make a run send
+  that text to a URL. Nothing there is a credential, and a preview id alone does not make a video public.
+- Known gap: copyright watch (Content ID claims on the private previews and the public videos) is not wired into the
+  loop yet; check YouTube Studio by hand before approving a popular-audio video.
 - Only `publish.py` ever makes a video public, and only for a record `approve`d by Satyam; approve checks the private
   preview still exists. The queue, plan, metrics and approvals live in git-ignored `cache/` and `ideas/`.
 
+## Before installing the loop jobs: supervised rehearsal
+The headless producer has NOT yet run for real. Until one supervised rehearsal has passed, `install.sh` installs only
+the original four jobs (pull, trends, ig-refresh, review) and refuses produce, ask, publish-1 and publish-2 (it checks
+for `cache/loop/REHEARSAL_OK`; `--dry-run` still prints all eight). Rehearse in the daytime, watching:
+```
+LOOP_WINDOW_OVERRIDE=1 LOOP_MAX_VIDEOS=1 pipeline/loop/run.sh produce
+```
+It must verify, from the log (`cache/loop/logs/produce-<YYYY-MM>.log`) and the result:
+1. The Bash sandbox (seatbelt) lets the stages work: mflux/MLX stills (Metal), the voice venv, ffmpeg; nothing needs
+   a path outside the allowRead list.
+2. `--permission-mode dontAsk` read scope: every Read the prompt needs is allowed (no silent denials in the log).
+3. `excludedCommands` matches `produce.py finish ...` even when Claude writes it as part of a compound command
+   (`cd ... && python3 ...`); the private upload succeeds.
+4. The Higgsfield MCP tool names in the allowlist are the ones the connector really exposes (a wrong name = denied).
+5. The Higgsfield upload/result hosts actually used, read from the sandbox network log: then replace the broad
+   `*.amazonaws.com`, `*.cloudfront.net`, `*.r2.cloudflarestorage.com`, `storage.googleapis.com` entries in
+   `produce_settings` (run.sh) with those exact hosts.
+6. The video ends `preview_ready` with a private YouTube link, nothing public, credits recorded.
+When all pass: `touch cache/loop/REHEARSAL_OK`, then install.
+
 ## Installing the schedule
-Installing needs Satyam's go: `pipeline/loop/install.sh --dry-run` first, then `pipeline/loop/install.sh`.
+Installing needs Satyam's go: `pipeline/loop/install.sh --dry-run` first, then `pipeline/loop/install.sh` (the loop
+jobs only after the rehearsal above).
 The plists point at the checkout the script is run from (`$LAB`), so run install.sh from the MAIN checkout
 (`/Users/satyam/kathakaar-lab`) after the loop branch is merged, not from a worktree. Re-running is safe (agents are
 booted out first). `uninstall.sh` removes all eight agents.

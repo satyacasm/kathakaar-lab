@@ -8,7 +8,7 @@ On YouTube, captions are **separate tracks, never drawn on the picture**. They a
 
 Satyam decides at five gates. Nothing is published without his explicit "publish" for that episode.
 
-**The content loop** (`pipeline/loop/README.md`) replaces the per-episode Gates 1-4 with automatic self-checks for the videos it makes: an overnight producer researches, scripts and renders them and uploads each privately to YouTube. Gate 5 becomes the daily approval: Satyam watches the private previews from his phone and approves or rejects each (`pipeline/loop/vqueue.py approve|reject`); at 12:30 and 19:30 IST only approved videos go public. Hand-made episodes still use the five gates below.
+**The content loop** (`pipeline/loop/README.md`) replaces the per-episode Gates 1-4 with automatic self-checks for the videos it makes: an overnight producer researches, scripts and renders them and uploads each privately to YouTube. Gate 5 becomes the daily approval: Satyam watches the private previews from his phone and approves or rejects each (`pipeline/loop/vqueue.py approve|reject`); at 12:30 and 19:30 IST only approved videos go public. Hand-made episodes still use the five gates below. The loop's own jobs (produce, ask, publish) are not installed until one supervised rehearsal (`LOOP_WINDOW_OVERRIDE=1 LOOP_MAX_VIDEOS=1 pipeline/loop/run.sh produce`) has passed and `cache/loop/REHEARSAL_OK` exists; `install.sh` refuses them before that (checklist in `pipeline/loop/README.md`).
 
 ```
  idea ──► 1 RESEARCH ──► [GATE 1: pick idea + angle]

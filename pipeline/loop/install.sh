@@ -7,6 +7,11 @@
 # review Sunday 09:00 | produce daily 01:00 | ask daily 09:00 | publish-1 daily 12:30 | publish-2 daily 19:30
 # (both publish agents run `run.sh publish`). launchd runs a calendar job that was missed while the Mac slept ONCE on wake; while the Mac is
 # powered off nothing runs. Already-loaded agents are booted out first, so re-running is safe.
+#
+# Rehearsal gate: the new loop jobs (produce, ask, publish-1, publish-2) are installed only once cache/loop/REHEARSAL_OK
+# exists, i.e. after a supervised `LOOP_WINDOW_OVERRIDE=1 LOOP_MAX_VIDEOS=1 pipeline/loop/run.sh produce` passed (see
+# pipeline/loop/README.md, "Before installing the loop jobs"). Without it only pull, trends, ig-refresh and review are
+# installed. --dry-run always prints all eight.
 set -eu
 LAB="${0:A:h:h:h}"
 AGENTS="$HOME/Library/LaunchAgents"
@@ -57,6 +62,11 @@ if [ $DRY -eq 1 ]; then
 fi
 
 mkdir -p "$AGENTS" "$LAB/cache/loop/logs"
+if [ ! -e "$LAB/cache/loop/REHEARSAL_OK" ]; then
+  echo "NOT installing produce, ask, publish-1, publish-2: no cache/loop/REHEARSAL_OK (the supervised producer"
+  echo "rehearsal has not passed yet). Installing only the original jobs; see pipeline/loop/README.md."
+  JOBS=(pull trends ig-refresh review)
+fi
 for j in $JOBS; do
   f="$AGENTS/com.kathakaar.$j.plist"
   launchctl bootout "gui/$(id -u)/com.kathakaar.$j" 2>/dev/null || true
