@@ -121,6 +121,13 @@ class ProduceTest(unittest.TestCase):
         self.assertEqual(self.rec("010-loop-narrated-x")["status"], "producing")
         self.assertFalse(any(c[0].endswith("new_reel.sh") for c in self.calls))
 
+    def test_series_previews_do_not_fill_the_buffer(self):
+        for i in range(6):
+            rid = f"02{i}-ramayana-route-p{i:02d}"
+            add(rid, {"format": "series", "audio": "own", "topic_source": "series", "slot_pref": "19:30"}, "api")
+            transition(rid, "producing"); transition(rid, "preview_ready", yt_id=f"yt{i}")
+        self.assertTrue(self.start().startswith("START "))
+
     def test_start_ignores_a_planned_record_without_a_folder(self):
         add("012-gone", {"format": "narrated", "audio": "bed", "topic_source": "trend_gap"}, "api")
         self.assertTrue(self.start().startswith("START "))

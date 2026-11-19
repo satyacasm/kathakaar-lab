@@ -259,15 +259,19 @@ def start(now=None, plan_path=None, slug_hint=None, max_videos=None, run_start=N
     open_ = [r["id"] for r in records if r["status"] == "producing"]
     if open_:
         raise ProduceError(f"{', '.join(open_)} is still producing: run `produce.py finish` or `produce.py fail` first")
-    if sum(r["status"] in BUFFER_STATUSES for r in records) >= BUFFER_TARGET:
+    # series records (finished videos queued by series.py) have their own slot and never hold the producer back
+    if sum(r["status"] in BUFFER_STATUSES and (r.get("cell") or {}).get("format") != "series"
+           for r in records) >= BUFFER_TARGET:
         return "STOP buffer"
     max_videos = DEFAULT_MAX if max_videos is None else max_videos
-    started = sum(1 for r in records if (_ts(r, "producing") or datetime.min.replace(tzinfo=TZ)) >= run_start)
+    started = sum(1 for r in records if (r.get("cell") or {}).get("format") != "series"
+                  and (_ts(r, "producing") or datetime.min.replace(tzinfo=TZ)) >= run_start)
     if started >= max_videos:
         return "STOP max"
     # A requeued video (failed -> planned, folder kept) is finished before any new plan row is started.
     for rec in records:
-        if rec["status"] == "planned" and (Path(EPISODES) / rec["id"] / "episode.json").exists():
+        if (rec["status"] == "planned" and (rec.get("cell") or {}).get("format") != "series"
+                and (Path(EPISODES) / rec["id"] / "episode.json").exists()):
             vqueue.transition(rec["id"], "producing")
             c = rec.get("cell") or {}
             return (f"RESUME {rec['id']} {c.get('format')} {c.get('audio')} {c.get('topic_source')}\n"

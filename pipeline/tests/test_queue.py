@@ -54,6 +54,16 @@ class TestQueue(QueueTestBase):
                          ["2026-11-19T12:30", "2026-11-19T19:30", "2026-11-20T12:30"])
         self.assertTrue(all(r["status"] == "approved" for r in out))
 
+    def test_approve_honours_an_evening_slot_pref(self):
+        for rid in ("s4", "s5"):
+            add(rid, {"format": "series", "audio": "own", "slot_pref": "19:30"}, "api")
+            transition(rid, "producing"); transition(rid, "preview_ready", yt_id="yt_" + rid)
+        self.make("loop", yt_id="yt_loop")
+        now = datetime(2026, 11, 19, 9, 0, tzinfo=TZ)
+        out = approve(["s4", "s5", "loop"], now, lambda vid: True)
+        self.assertEqual([r["slot"][:16] for r in out],
+                         ["2026-11-19T19:30", "2026-11-20T19:30", "2026-11-19T12:30"])
+
     def test_approve_after_both_slots_goes_to_tomorrow(self):
         self.make("a", yt_id="yt_a")
         now = datetime(2026, 11, 19, 20, 15, tzinfo=TZ)

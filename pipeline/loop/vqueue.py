@@ -153,18 +153,27 @@ def update(record_id: str, **fields) -> dict:
         return r
 
 
-def next_free_slot(records: list[dict], now: datetime) -> datetime:
+def next_free_slot(records: list[dict], now: datetime, only: str | None = None) -> datetime:
+    """Earliest free IST slot at or after now; `only` ("12:30" or "19:30") restricts it to that slot (a record's
+    cell.slot_pref, e.g. a series that always goes out in the evening)."""
     now = now.astimezone(TZ)
     held = {datetime.fromisoformat(r["slot"]).astimezone(TZ) for r in records
             if r.get("slot") and r["status"] in HELD}
     day = now.date()
     while True:
         for hhmm in SLOTS:
+            if only and hhmm != only:
+                continue
             h, m = map(int, hhmm.split(":"))
             cand = datetime(day.year, day.month, day.day, h, m, tzinfo=TZ)
             if cand >= now and cand not in held:
                 return cand
         day += timedelta(days=1)
+
+
+def _pref(r: dict):
+    p = (r.get("cell") or {}).get("slot_pref")
+    return p if p in SLOTS else None
 
 
 def move_late(now: datetime) -> list[tuple[str, str, str]]:
@@ -175,7 +184,7 @@ def move_late(now: datetime) -> list[tuple[str, str, str]]:
         for r in sorted(records, key=lambda r: r.get("slot") or ""):
             if (r["status"] == "approved" and r.get("slot") and not r.get("yt_public")
                     and datetime.fromisoformat(r["slot"]) < now - LATE_GRACE):
-                new = next_free_slot(records, now).isoformat()
+                new = next_free_slot(records, now, _pref(r)).isoformat()
                 moved.append((r["id"], r["slot"], new))
                 r["slot"] = new
     return moved
@@ -191,7 +200,7 @@ def approve(ids: list[str], now: datetime, exists: Callable[[str], bool]) -> lis
             if not r.get("yt_id") or not exists(r["yt_id"]):
                 raise QueueError(f"{r['id']}: private preview {r.get('yt_id')!r} not found on YouTube")
         for r in recs:
-            slot = next_free_slot(records, now)
+            slot = next_free_slot(records, now, _pref(r))
             _set_status(r, "approved", now, slot=slot.isoformat())
         return recs
 
