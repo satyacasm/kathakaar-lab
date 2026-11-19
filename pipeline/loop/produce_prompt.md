@@ -57,7 +57,7 @@ command per call, with no `cd`, pipes, `&&`, `;` or redirects. Anything else is 
 | log a music purchase | `P spend <id> <credits> --job <higgsfield job id>` |
 | trust a Higgsfield URL's host | `P allow-host <id> <url>` (only for URLs a Higgsfield tool returned; *.higgsfield.ai needs no step) |
 | upload a still to Higgsfield | `P put <id> out/keyframes/sNN.png <upload url>` |
-| save a Higgsfield result | `P fetch <id> <url> out/hero_raw/cNN.mp4` or `P fetch <id> <url> audio/original_bed.wav` |
+| save a Higgsfield result | `P fetch <id> <url> out/hero_raw/cNN.mp4` or `P fetch <id> <url> audio/original_bed.mp3` |
 | media facts | `P probe <id> <path>` (duration, streams; path in the episode or `music-lab/pool/...`) |
 | look at one frame | `P frame <id> out/final/reel_with_song.mp4 <seconds>` → `out/qa/frame_<t>.png` |
 | contact sheet | `P frames <id>` → `out/qa/frames.png` (1 frame per second) |
@@ -86,6 +86,9 @@ Reading: you may Read files under `episodes/`, `ideas/`, `music-lab/`, `sources/
    - `STOP time|buffer|max|plan` → go to "At the end". Do not call `start` again.
    - `START <id> <format> <audio> <topic_source>` → make that video. A second line may say it was switched to a
      narrated Short (over budget or no popular song); that is already handled and Satyam has been told.
+   - `RESUME <id> <format> <audio> <topic_source>` → an earlier run's video, requeued after a failure. Make it the
+     same way, but read what `episodes/<id>/` already holds first and skip every step whose output is already there
+     (research, script, stills, voice); redo only what is missing.
    - `error: ... still producing` → you left a video open: `finish` or `fail` it, then call `start` again.
 2. Make the video: steps 2-9 below, in order.
 3. End with exactly one of `P finish <id>` (READY) or `P fail <id> --reason "..."`. Then go to 1.
@@ -160,8 +163,11 @@ Check the clip with `P frame` at several points (not only the first) for drift i
   then `audio_pool.py fetch <url> --title ... --artist ... --licence https://pixabay.com/service/license-summary/`,
   then `P copy-song <id> library/<file> ...`.
 - `original`: quote with `estimate_audio_cost`; `P can-spend <quote>` must say OK; `generate_audio` (instrumental,
-  describe mood/tempo/instruments, no artist names); `jobs_wait`; `P fetch <id> <url> audio/original_bed.wav`; at once
-  `P spend <id> <credits> --job <job id>`; `audio_pool.py register episodes/<id>/audio/original_bed.wav --job <job id>
+  describe mood/tempo/instruments, no artist names) with params `{"model": "elevenlabs_music_v2_5", "prompt": "...",
+  "duration": <seconds, 15-120>, "force_instrumental": true, "batch_size": 1, "use_unlim": false}` (about 11 credits
+  for 75 s; the result is an mp3, so fetch it as `audio/original_bed.mp3`); `jobs_wait`;
+  `P fetch <id> <url> audio/original_bed.mp3`; at once
+  `P spend <id> <credits> --job <job id>`; `audio_pool.py register episodes/<id>/audio/original_bed.mp3 --job <job id>
   --prompt "<prompt>"`.
 - `bed` (narrated/claim): a quiet library or original track already in the pool, `P copy-song <id> <kind>/<file>
   --name bed` (0 credits).

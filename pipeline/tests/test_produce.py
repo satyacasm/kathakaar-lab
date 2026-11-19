@@ -109,6 +109,22 @@ class ProduceTest(unittest.TestCase):
         self.assertEqual(self.start(), "STOP buffer")
         self.assertFalse(any(c[0].endswith("new_reel.sh") for c in self.calls))
 
+    def test_start_resumes_a_requeued_video_before_a_new_row(self):
+        add("010-loop-narrated-x", {"format": "narrated", "audio": "bed", "topic_source": "trend_gap"}, "api")
+        transition("010-loop-narrated-x", "producing")
+        transition("010-loop-narrated-x", "failed", reason="audio step")
+        vqueue.requeue("010-loop-narrated-x")
+        (self.eps / "010-loop-narrated-x").mkdir(parents=True)
+        (self.eps / "010-loop-narrated-x/episode.json").write_text("{}")
+        out = self.start()
+        self.assertTrue(out.startswith("RESUME 010-loop-narrated-x narrated bed trend_gap"), out)
+        self.assertEqual(self.rec("010-loop-narrated-x")["status"], "producing")
+        self.assertFalse(any(c[0].endswith("new_reel.sh") for c in self.calls))
+
+    def test_start_ignores_a_planned_record_without_a_folder(self):
+        add("012-gone", {"format": "narrated", "audio": "bed", "topic_source": "trend_gap"}, "api")
+        self.assertTrue(self.start().startswith("START "))
+
     def test_start_stops_after_six(self):
         self.assertEqual(self.start(datetime(2026, 11, 19, 6, 5, tzinfo=TZ)), "STOP time")
         self.assertEqual(load(), [])

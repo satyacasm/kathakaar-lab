@@ -265,6 +265,13 @@ def start(now=None, plan_path=None, slug_hint=None, max_videos=None, run_start=N
     started = sum(1 for r in records if (_ts(r, "producing") or datetime.min.replace(tzinfo=TZ)) >= run_start)
     if started >= max_videos:
         return "STOP max"
+    # A requeued video (failed -> planned, folder kept) is finished before any new plan row is started.
+    for rec in records:
+        if rec["status"] == "planned" and (Path(EPISODES) / rec["id"] / "episode.json").exists():
+            vqueue.transition(rec["id"], "producing")
+            c = rec.get("cell") or {}
+            return (f"RESUME {rec['id']} {c.get('format')} {c.get('audio')} {c.get('topic_source')}\n"
+                    "Its folder is kept: reuse the research, script, stills and voice already there; redo only missing steps")
     plan_path = Path(plan_path or os.environ.get("PLAN_PATH") or plan.PLAN_PATH)
     rows = plan.read(plan_path)
     row = plan.next_row(rows, records)
