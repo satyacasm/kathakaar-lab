@@ -287,6 +287,7 @@ def upload_caption(video_id: str, lang: str, name: str, srt: Path) -> str:
 
 # ------------------------------------------------------------------ privacy / delete
 PRIVACIES = ("private", "unlisted", "public")
+KEEP_STATUS = ("containsSyntheticMedia", "license", "publicStatsViewable", "selfDeclaredMadeForKids", "embeddable")
 
 
 def video_exists(video_id: str) -> bool:
@@ -299,7 +300,16 @@ def video_exists(video_id: str) -> bool:
 def set_privacy(video_id: str, privacy: str) -> str:
     if privacy not in PRIVACIES:
         raise ValueError(f"privacy must be one of {PRIVACIES}, got {privacy!r}")
-    body = {"id": video_id, "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False, "embeddable": True}}
+    # videos.update replaces the whole status part: send back the writable fields as they are now, so only
+    # privacyStatus changes (an omitted containsSyntheticMedia/license/... would be reset to its default).
+    q = urllib.parse.urlencode({"part": "status", "id": video_id})
+    items = http("GET", f"{API}/videos?{q}", headers=auth_headers(), timeout=15).get("items", [])
+    if len(items) != 1:
+        raise YTError(404, f"video {video_id} not found")
+    cur = items[0].get("status") or {}
+    status = {k: cur[k] for k in KEEP_STATUS if k in cur}
+    status["privacyStatus"] = privacy
+    body = {"id": video_id, "status": status}
     r = http("PUT", f"{API}/videos?part=status", json.dumps(body).encode(),
              auth_headers({"Content-Type": "application/json; charset=UTF-8"}))
     return r.get("status", {}).get("privacyStatus", privacy)

@@ -44,17 +44,30 @@ class YoutubeOpsTest(unittest.TestCase):
                 yt.video_exists("v")
             self.assertLessEqual(h.call_args.kwargs.get("timeout", 600), 15)
 
-    def test_set_privacy_sends_status_body(self):
-        with mock.patch.object(yt, "http", return_value={"status": {"privacyStatus": "public"}}) as h:
+    def test_set_privacy_keeps_other_status_fields(self):
+        cur = {"privacyStatus": "private", "uploadStatus": "processed", "containsSyntheticMedia": True,
+               "license": "creativeCommon", "publicStatsViewable": False, "selfDeclaredMadeForKids": False,
+               "embeddable": False, "madeForKids": False}
+        replies = [{"items": [{"id": "v", "status": cur}]}, {"status": {"privacyStatus": "public"}}]
+        with mock.patch.object(yt, "http", side_effect=replies) as h:
             self.assertEqual(yt.set_privacy("v", "public"), "public")
-            method, url = h.call_args.args[:2]
-            body = json.loads(h.call_args.args[2])
-        self.assertEqual(method, "PUT")
-        self.assertIn("part=status", url)
+        get, put = h.call_args_list
+        self.assertEqual(get.args[0], "GET")
+        self.assertIn("part=status", get.args[1])
+        self.assertEqual(put.args[0], "PUT")
+        self.assertIn("part=status", put.args[1])
+        body = json.loads(put.args[2])
         self.assertEqual(body["id"], "v")
-        self.assertEqual(body["status"]["privacyStatus"], "public")
-        self.assertIs(body["status"]["selfDeclaredMadeForKids"], False)
-        self.assertIs(body["status"]["embeddable"], True)
+        self.assertEqual(body["status"], {"privacyStatus": "public", "containsSyntheticMedia": True,
+                                          "license": "creativeCommon", "publicStatsViewable": False,
+                                          "selfDeclaredMadeForKids": False, "embeddable": False})
+
+    def test_set_privacy_missing_video_is_404(self):
+        with mock.patch.object(yt, "http", return_value={"items": []}) as h:
+            with self.assertRaises(yt.YTError) as cm:
+                yt.set_privacy("v", "public")
+        self.assertEqual(cm.exception.code, 404)
+        self.assertEqual(h.call_count, 1)
 
     def test_set_privacy_rejects_unknown(self):
         with mock.patch.object(yt, "http") as h:
