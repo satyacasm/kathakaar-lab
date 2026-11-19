@@ -12,8 +12,12 @@ calls a write endpoint. Reuses the OAuth token from youtube_publish.py (scopes: 
                               younger than 90 days). --force snapshots everything now, tagged `manual`. Each snapshot
                               = Data API statistics + Analytics lifetime totals + retention curve + traffic sources;
                               it also refreshes the per-day series and new comments. Idempotent: safe from hourly cron.
+                              Only public videos are snapshotted (private loop previews / unlisted are stored but
+                              skipped); when a video turns public or its publishedAt moves, snapshots taken before
+                              that time (and their retention/traffic rows) are deleted so the buckets restart.
   yt status [--limit N]       table of videos, newest first, with the latest numbers and the mapped episode
-  yt map                      suggest episodes for unmapped videos (difflib on titles, score >= 0.5)
+  yt map                      suggest episodes for unmapped public videos (difflib on titles, score >= 0.5);
+                              private previews are skipped and --set refuses them until they are public
   yt map --set VIDEO_ID SLUG  / --unset VIDEO_ID: edit cache/analytics/episode_map.json (the user confirms mappings)
   yt export                   write episodes/<slug>/analytics/youtube.json for each mapped episode (also run by pull)
 
@@ -275,6 +279,20 @@ def load_map() -> dict[str, str]:
         return {}
 
 
+def preview_ids(eps: dict[str, dict]) -> set[str]:
+    """Video ids recorded as the loop's private previews (episode.json published.youtube_preview.id)."""
+    out = set()
+    for ep in eps.values():
+        vid = ((ep.get("published") or {}).get("youtube_preview") or {}).get("id")
+        if vid:
+            out.add(vid)
+    return out
+
+
+def is_public(row) -> bool:
+    return row["privacy"] == "public"
+
+
 def effective_map(eps: dict[str, dict]) -> dict[str, str]:
     m = dict(load_map())
     for slug, ep in eps.items():                      # episode.json wins over the map file
@@ -316,7 +334,8 @@ def upsert_video(con, v: dict, slug_map: dict[str, str]) -> None:
     vid, sn, st = v["id"], v["snippet"], v.get("statistics", {})
     dur = parse_duration(v.get("contentDetails", {}).get("duration"))
     now = iso(now_utc())
-    old = con.execute("SELECT is_short, short_method FROM videos WHERE video_id=?", (vid,)).fetchone()
+    old = con.execute("SELECT is_short, short_method, privacy, published_at FROM videos WHERE video_id=?",
+                      (vid,)).fetchone()
     is_short, method = (old["is_short"], old["short_method"]) if old and old["is_short"] is not None else (None, None)
     if is_short is None:
         res = check_short(vid)
@@ -342,6 +361,22 @@ def upsert_video(con, v: dict, slug_map: dict[str, str]) -> None:
                  json.dumps(sn.get("tags", []), ensure_ascii=False),
                  sn.get("defaultAudioLanguage") or sn.get("defaultLanguage"), thumb, slug_map.get(vid),
                  toint(st.get("viewCount")), toint(st.get("likeCount")), toint(st.get("commentCount")), now, now, now))
+    privacy, published = v.get("status", {}).get("privacyStatus"), sn.get("publishedAt")
+    if old and privacy == "public" and published and (old["privacy"] != "public" or old["published_at"] != published):
+        purge_before(con, vid, published)
+
+
+def purge_before(con, vid: str, published_at: str) -> int:
+    """A video just went public (or its publish time moved): drop the snapshots taken before that time, with their
+    retention and traffic rows, so the age buckets (1h, 6h, ...) restart from going public."""
+    pub = parse_ts(published_at)
+    old = [r["id"] for r in con.execute("SELECT id, taken_at FROM snapshots WHERE video_id=?", (vid,))
+           if parse_ts(r["taken_at"]) < pub]
+    for sid in old:
+        con.execute("DELETE FROM retention WHERE snapshot_id=?", (sid,))
+        con.execute("DELETE FROM traffic WHERE snapshot_id=?", (sid,))
+        con.execute("DELETE FROM snapshots WHERE id=?", (sid,))
+    return len(old)
 
 
 # ------------------------------------------------------------------ snapshot schedule
@@ -511,8 +546,8 @@ def cmd_pull(a):
                            (a.video,) if a.video else ()).fetchall():
         vid = row["video_id"]
         try:
-            if not row["published_at"]:
-                continue
+            if not row["published_at"] or not is_public(row):
+                continue  # private previews / unlisted: no snapshots, comments or series until public
             bucket, age_h = due_bucket(con, vid, row["published_at"], a.force)
             first_comments = meta_get(con, f"comments_done:{vid}") is None
             if bucket:
@@ -598,8 +633,15 @@ def cmd_map(a):
         m = load_map()
         if a.set:
             vid, slug = a.set
-            if slug not in load_episodes():
+            eps = load_episodes()
+            if slug not in eps:
                 sys.exit(f"unknown episode slug: {slug}")
+            con = db()
+            row = con.execute("SELECT privacy FROM videos WHERE video_id=?", (vid,)).fetchone()
+            con.close()
+            if (row and not is_public(row)) or (not row and vid in preview_ids(eps)):
+                sys.exit(f"{vid} is not public yet (private preview or {row['privacy'] if row else 'unknown'}): "
+                         f"not mapped; it maps itself once the publisher makes it public")
             m[vid] = slug
             print(f"mapped {vid} -> {slug}")
         else:
@@ -620,8 +662,11 @@ def cmd_map(a):
     eps = load_episodes()
     eff = effective_map(eps)
     rows = con.execute("SELECT * FROM videos ORDER BY published_at DESC").fetchall()
-    unmapped = [r for r in rows if r["video_id"] not in eff]
-    print(f"{len(rows) - len(unmapped)} mapped, {len(unmapped)} unmapped\n")
+    # private previews (and rejected ones) are never suggested: they map themselves when the publisher makes them public
+    hidden = [r for r in rows if r["video_id"] not in eff and not is_public(r)]
+    unmapped = [r for r in rows if r["video_id"] not in eff and r not in hidden]
+    print(f"{len(rows) - len(unmapped) - len(hidden)} mapped, {len(unmapped)} unmapped"
+          + (f", {len(hidden)} not public yet (skipped)" if hidden else "") + "\n")
     norm = lambda s: " ".join((s or "").lower().replace("#shorts", "").split())  # noqa: E731
     for r in unmapped:
         best = (0.0, None, "")
