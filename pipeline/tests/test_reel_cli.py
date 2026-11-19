@@ -41,6 +41,37 @@ class ResolveEpTest(unittest.TestCase):
                     self.resolve(arg)
 
 
+class HeroDateTest(unittest.TestCase):
+    """hero-log --date: a loop video may only log today's IST date."""
+
+    def setUp(self):
+        import json
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.q = Path(self.tmp.name) / "queue.json"
+        self.q.write_text(json.dumps([{"id": "loop-ep"}]))
+
+    def check(self, name, date):
+        with unittest.mock.patch("sys.stderr"):
+            reel_cli.check_hero_date(Path("/x") / name, date, self.q, today="2026-11-19")
+
+    def test_loop_video_other_date_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.check("loop-ep", "2026-10-31")
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_loop_video_today_and_no_date_ok(self):
+        self.check("loop-ep", "2026-11-19")
+        self.check("loop-ep", None)
+
+    def test_hand_made_episode_may_backdate(self):
+        self.check("hand-ep", "2026-10-31")
+
+    def test_no_queue_file_ok(self):
+        self.q.unlink()
+        self.check("loop-ep", "2026-10-31")
+
+
 import unittest.mock  # noqa: E402
 
 if __name__ == "__main__":

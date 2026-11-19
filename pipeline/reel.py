@@ -138,6 +138,26 @@ def cmd_all(ep: Path, args) -> int:
     return 0
 
 
+def check_hero_date(ep: Path, date: str | None, queue: Path = None, today: str = None) -> None:
+    """hero-log --date may back-date an entry only for hand-made episodes: a loop video (its id is in the loop queue)
+    must log today's IST date, so the loop's monthly credit cap cannot be dodged."""
+    if not date:
+        return
+    import json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    queue = Path(queue or LAB / "cache" / "loop" / "queue.json")
+    try:
+        ids = {r.get("id") for r in json.loads(queue.read_text())}
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        fail(f"hero-log --date: cannot read the loop queue {queue}: {e}")
+    today = today or datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    if ep.name in ids and date != today:
+        fail(f"hero-log --date {date}: {ep.name} is a loop video; only today's IST date ({today}) may be logged", 2)
+
+
 def main():
     ap = argparse.ArgumentParser(prog="reel.py", description=__doc__.split("\n\n")[0])
     ap.add_argument("episode", help="episode slug (e.g. 900-pipeline-demo) or path to an episode folder")
@@ -151,7 +171,7 @@ def main():
     ap.add_argument("--job", help="hero-log: Higgsfield job id")
     ap.add_argument("--model", help="hero-log: override model (default from shots.json)")
     ap.add_argument("--seconds", type=float, help="hero-log: override seconds (default from shots.json)")
-    ap.add_argument("--date", help="hero-log: YYYY-MM-DD (default today)")
+    ap.add_argument("--date", help="hero-log: YYYY-MM-DD (default today; loop videos: today only)")
     a = ap.parse_args()
     ep = resolve_ep(a.episode)
     from reel import shots as S
@@ -171,6 +191,7 @@ def main():
         if a.stage == "hero-log":
             if a.n is None or a.credits is None:
                 fail("hero-log needs --n <shot> and --credits <amount> (and --job <id>)", 2)
+            check_hero_date(ep, a.date)
             from reel import budget
             budget.hero_log(ep, a.n, a.credits, a.job, a.model, a.seconds, a.date)
             return 0

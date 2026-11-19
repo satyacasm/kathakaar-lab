@@ -144,6 +144,13 @@ class ProduceTest(unittest.TestCase):
         self.assertEqual((r["ig_mode"], r["status"]), ("manual", "producing"))
         self.assertEqual((r["cell"]["format"], r["cell"]["audio"]), ("music", "popular"))
 
+    def test_plan_outside_ideas_or_tmp_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            produce.main(["--plan", str(Path(produce.LAB) / "pipeline/plan.md"), "start"])
+        self.assertIn("refusing to write", str(cm.exception.code))
+        with mock.patch.dict(os.environ, {"PLAN_PATH": "/etc/plan.md"}), self.assertRaises(SystemExit):
+            produce.main(["start"])
+
     def test_start_api_for_library_and_takes_plan_row(self):
         out = self.start()
         rid = out.split()[1]

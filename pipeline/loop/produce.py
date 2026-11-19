@@ -38,7 +38,7 @@ Voice (engine/kk.sh with fixed arguments)
 
 Window: start only between 00:30 and 06:00 IST ($LOOP_WINDOW_OVERRIDE=1 for a supervised daytime rehearsal).
 Stops: 4+ videos in preview_ready/approved, $LOOP_MAX_VIDEOS (default 4) started since $LOOP_RUN_START, no open row.
-Plan: --plan, $PLAN_PATH or ideas/experiment_plan.md. Never publishes: the upload is always --preview (private).
+Plan: --plan, $PLAN_PATH or ideas/experiment_plan.md (must lie under ideas/ or the temp dir). Never publishes: the upload is always --preview (private).
 """
 import argparse, ipaddress, json, math, os, re, shutil, socket, subprocess, sys
 import urllib.error, urllib.parse, urllib.request
@@ -863,6 +863,9 @@ def main(argv=None) -> int:
     s.add_argument("--takes", type=int); s.add_argument("--lines"); s.add_argument("--pick")
     sub.add_parser("voice-timing").add_argument("id")
     a = ap.parse_args(argv)
+    if a.plan or os.environ.get("PLAN_PATH"):  # start rewrites the plan: only under ideas/ or the temp dir
+        import tempfile
+        a.plan = str(plan._confine(a.plan or os.environ["PLAN_PATH"], LAB / "ideas", tempfile.gettempdir()))
     try:
         if a.cmd == "start":
             mx = int(os.environ.get("LOOP_MAX_VIDEOS") or DEFAULT_MAX)
