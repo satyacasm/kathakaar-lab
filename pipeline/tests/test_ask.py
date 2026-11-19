@@ -48,6 +48,14 @@ class TestAsk(unittest.TestCase):
         self.assertEqual(ask._title("a"), "Hello Title")
         self.assertEqual(ask._title("missing"), "missing")
 
+    def test_private_label_only_when_not_public(self):
+        pub = rec("a")
+        pub["yt_public"] = True
+        out = ask.compose([pub])
+        self.assertIn("https://youtu.be/abc", out)
+        self.assertNotIn("(private)", out)
+        self.assertIn("(private)", ask.compose([rec("b")]))
+
     def test_grammar(self):
         self.assertTrue(ask.compose([rec("a")]).startswith("1 video awaits your approval:"))
         self.assertTrue(ask.compose([rec("a"), rec("b")]).startswith("2 videos await your approval:"))

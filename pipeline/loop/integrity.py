@@ -11,6 +11,7 @@ from pathlib import Path
 FINALS = ("reel_with_song.mp4", "reel_SILENT.mp4")
 PACKAGE = ("caption_instagram.txt", "youtube.md")
 META_FIELDS = ("id", "slug", "title_en", "title_hi", "song")
+YT_META_FIELDS = ("id", "slug", "title_en", "title_hi")   # the part the YouTube preview already carries
 
 
 def sha256(path) -> str:
@@ -21,17 +22,34 @@ def sha256(path) -> str:
     return h.hexdigest()
 
 
-def meta_digest(meta: dict) -> str:
-    sub = {k: meta.get(k) for k in META_FIELDS}
+def meta_digest(meta: dict, fields=META_FIELDS) -> str:
+    sub = {k: meta.get(k) for k in fields}
     return hashlib.sha256(json.dumps(sub, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
 def record(ep: Path) -> dict:
     """Queue-record fields for an episode as it is now."""
     ep = Path(ep)
+    meta = json.loads((ep / "episode.json").read_text())
     return {"final_sha256": {f: sha256(ep / "out/final" / f) for f in FINALS if (ep / "out/final" / f).is_file()},
             "package_sha256": {f: sha256(ep / "out/package" / f) for f in PACKAGE if (ep / "out/package" / f).is_file()},
-            "meta_sha256": meta_digest(json.loads((ep / "episode.json").read_text()))}
+            "meta_sha256": meta_digest(meta), "yt_meta_sha256": meta_digest(meta, YT_META_FIELDS)}
+
+
+def youtube_side_change(old: dict, new: dict):
+    """None if `new` differs from `old` (both record() dicts) only in what Instagram uses (caption_instagram.txt, the
+    song fields), else what changed on the YouTube side (a video file, youtube.md, the titles). Missing = changed."""
+    of, nf = old.get("final_sha256") or {}, new.get("final_sha256") or {}
+    for name in sorted(set(of) | set(nf)):
+        if of.get(name) != nf.get(name):
+            return f"final video {name}"
+    if (old.get("package_sha256") or {}).get("youtube.md") != (new.get("package_sha256") or {}).get("youtube.md"):
+        return "youtube.md"
+    if old.get("meta_sha256") == new.get("meta_sha256"):
+        return None
+    if not old.get("yt_meta_sha256") or old["yt_meta_sha256"] != new.get("yt_meta_sha256"):
+        return "episode.json title"   # older records cannot tell a title change from a song change: refuse
+    return None
 
 
 def problem(rec: dict, ep: Path):

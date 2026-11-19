@@ -1,4 +1,4 @@
-import contextlib, fcntl, io, multiprocessing, os, sys, tempfile, unittest
+import contextlib, fcntl, io, json, multiprocessing, os, sys, tempfile, unittest
 from unittest import mock
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -175,6 +175,40 @@ class TestRejectDeletesPreview(QueueTestBase):
         p = mock.patch.object(inbox, "add")
         self.inbox_add = p.start()
         self.addCleanup(p.stop)
+        p = mock.patch.object(youtube_publish, "video_privacy", return_value="private")
+        self.privacy = p.start()
+        self.addCleanup(p.stop)
+
+    def test_cli_reject_never_deletes_yt_public_record(self):
+        self.make("a", yt_id="yt_a")
+        vqueue.update("a", yt_public=True)
+        with mock.patch.object(self.yt, "delete_video") as d:
+            self._cli("reject", "a", "--reason", "x")
+        d.assert_not_called()
+        self.privacy.assert_not_called()
+        text, kind = self.inbox_add.call_args.args
+        self.assertEqual(kind, "failure")
+        self.assertIn("refused to delete yt_a", text)
+        self.assertNotIn("yt_deleted", load()[0])
+
+    def test_cli_reject_does_not_delete_when_api_says_not_private(self):
+        for live in ("unlisted", "public"):
+            rid = "r-" + live
+            self.make(rid, yt_id="yt_" + rid)
+            self.privacy.return_value = live
+            with mock.patch.object(self.yt, "delete_video") as d:
+                self._cli("reject", rid, "--reason", "x")
+            d.assert_not_called()
+            self.assertIn(f"refused to delete yt_{rid}", self.inbox_add.call_args.args[0])
+            self.assertIn("not private", self.inbox_add.call_args.args[0])
+
+    def test_cli_reject_video_already_gone(self):
+        self.make("a", yt_id="yt_a")
+        self.privacy.return_value = None
+        with mock.patch.object(self.yt, "delete_video") as d:
+            self._cli("reject", "a", "--reason", "x")
+        d.assert_not_called()
+        self.assertIs(load()[0]["yt_deleted"], True)
 
     def _cli(self, *argv):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -223,43 +257,117 @@ class TestRejectDeletesPreview(QueueTestBase):
 
 
 class TestResealRequeue(QueueTestBase):
-    def failed(self, rid, **fields):
+    def setUp(self):
+        super().setUp()
+        import integrity, youtube_publish
+        self.integrity, self.yt = integrity, youtube_publish
+        self.eps = Path(self.tmp.name) / "episodes"
+        p = mock.patch.object(vqueue, "EPISODES", self.eps)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def episode(self, rid):
+        ep = self.eps / rid
+        (ep / "out/final").mkdir(parents=True)
+        (ep / "out/package").mkdir(parents=True)
+        (ep / "out/final/reel_with_song.mp4").write_bytes(b"video")
+        (ep / "out/final/reel_SILENT.mp4").write_bytes(b"silent")
+        (ep / "out/package/caption_instagram.txt").write_text("caption\n")
+        (ep / "out/package/youtube.md").write_text("## Title\nT\n")
+        self.meta(rid, title_en="Title", song={"title": "S", "instagram_start": "0:10"})
+        return ep
+
+    def meta(self, rid, **fields):
+        f = self.eps / rid / "episode.json"
+        meta = json.loads(f.read_text()) if f.exists() else {"id": rid, "slug": rid}
+        meta.update(fields)
+        f.write_text(json.dumps(meta))
+
+    def failed(self, rid, with_episode=True, **fields):
         self.make(rid, **fields)
+        digests = self.integrity.record(self.episode(rid)) if with_episode else {}
         recs = load()
         for r in recs:
             if r["id"] == rid:
                 r.update(status="failed", reason="package changed", slot="2026-11-19T12:30:00+05:30",
-                         yt_retry=1, ig_retry=1, ig_container="c1", final_sha256={"x": "old"})
+                         yt_retry=1, ig_retry=1, ig_container="c1", **digests)
         save(recs)
 
-    def test_reseal_back_to_preview_ready_with_new_digests(self):
+    def reseal(self, rid, exists=lambda vid: True):
+        return vqueue.reseal(rid, exists, lambda r: self.integrity.record(self.eps / r),
+                             self.integrity.youtube_side_change)
+
+    def test_reseal_accepts_caption_only_change(self):
         self.failed("a", yt_id="yt_a")
-        r = vqueue.reseal("a", lambda vid: vid == "yt_a", lambda rid: {"final_sha256": {"x": "new"},
-                                                                        "package_sha256": {}, "meta_sha256": "m"})
+        (self.eps / "a/out/package/caption_instagram.txt").write_text("better caption\n")
+        self.meta("a", song={"title": "S", "instagram_start": "0:12"})
+        r = self.reseal("a")
         self.assertEqual(r["status"], "preview_ready")
         rec = load()[0]
         for k in ("slot", "yt_retry", "ig_retry", "ig_container", "reason"):
             self.assertIsNone(rec[k], k)
-        self.assertEqual(rec["final_sha256"], {"x": "new"})
-        self.assertEqual(rec["meta_sha256"], "m")
+        self.assertEqual(rec["package_sha256"]["caption_instagram.txt"],
+                         self.integrity.sha256(self.eps / "a/out/package/caption_instagram.txt"))
+        self.assertIsNone(self.integrity.problem(rec, self.eps / "a"))
         self.assertEqual(rec["history"][-1][1], "preview_ready")
         # still needs a fresh approval
         out = approve(["a"], datetime(2026, 11, 19, 9, 0, tzinfo=TZ), lambda vid: True)
         self.assertEqual(out[0]["status"], "approved")
 
+    def test_reseal_refuses_changed_final_video(self):
+        for name in ("reel_with_song.mp4", "reel_SILENT.mp4"):
+            rid = "v-" + name[:8]
+            self.failed(rid, yt_id="yt_" + rid)
+            (self.eps / rid / "out/final" / name).write_bytes(b"re-rendered")
+            with self.assertRaisesRegex(QueueError, "needs a new preview"):
+                self.reseal(rid)
+            self.assertEqual(_find_rec(rid)["status"], "failed")
+
+    def test_reseal_refuses_changed_youtube_md_or_title(self):
+        self.failed("a", yt_id="yt_a")
+        (self.eps / "a/out/package/youtube.md").write_text("## Title\nNew\n")
+        with self.assertRaisesRegex(QueueError, "youtube.md"):
+            self.reseal("a")
+        for key in ("title_en", "title_hi"):
+            rid = "t-" + key
+            self.failed(rid, yt_id="yt_" + rid)
+            self.meta(rid, **{key: "Another title"})
+            with self.assertRaisesRegex(QueueError, "title"):
+                self.reseal(rid)
+            self.assertEqual(_find_rec(rid)["status"], "failed")
+
+    def test_reseal_refuses_meta_change_on_old_record_without_yt_meta(self):
+        self.failed("a", yt_id="yt_a")
+        recs = load()
+        recs[0].pop("yt_meta_sha256")
+        save(recs)
+        self.meta("a", song={"title": "S2"})
+        with self.assertRaisesRegex(QueueError, "needs a new preview"):
+            self.reseal("a")
+
+    def test_reseal_refuses_yt_public(self):
+        self.failed("a", yt_id="yt_a", yt_public=True)
+        exists = mock.Mock(return_value=True)
+        with self.assertRaisesRegex(QueueError, "already public on YouTube"):
+            self.reseal("a", exists)
+        exists.assert_not_called()
+        rec = load()[0]
+        self.assertEqual(rec["status"], "failed")
+        self.assertEqual((rec["ig_container"], rec["ig_retry"]), ("c1", 1))
+
     def test_reseal_refuses_missing_preview(self):
         self.failed("a", yt_id="yt_a")
         with self.assertRaisesRegex(QueueError, "not found"):
-            vqueue.reseal("a", lambda vid: False, lambda rid: {})
+            self.reseal("a", lambda vid: False)
         self.assertEqual(load()[0]["status"], "failed")
 
     def test_reseal_refuses_non_failed_and_no_preview(self):
         self.make("a", yt_id="yt_a")
         with self.assertRaisesRegex(QueueError, "only failed"):
-            vqueue.reseal("a", lambda vid: True, lambda rid: {})
+            self.reseal("a")
         self.failed("b")
         with self.assertRaisesRegex(QueueError, "requeue"):
-            vqueue.reseal("b", lambda vid: True, lambda rid: {})
+            self.reseal("b")
 
     def test_requeue_only_without_preview(self):
         self.failed("a", yt_id="yt_a")
@@ -276,16 +384,26 @@ class TestResealRequeue(QueueTestBase):
         self.assertIn("use reseal", str(cm.exception.code))
 
     def test_cli_reseal_uses_integrity_of_episode(self):
-        import integrity, youtube_publish
         self.failed("a", yt_id="yt_a")
-        eps = Path(self.tmp.name) / "episodes"
-        with mock.patch.object(vqueue, "EPISODES", eps), \
-             mock.patch.object(youtube_publish, "video_exists", return_value=True), \
-             mock.patch.object(integrity, "record", return_value={"meta_sha256": "z"}) as rec, \
+        (self.eps / "a/out/package/caption_instagram.txt").write_text("edited\n")
+        with mock.patch.object(self.yt, "video_exists", return_value=True), \
+             mock.patch.object(self.integrity, "record", wraps=self.integrity.record) as rec, \
              contextlib.redirect_stdout(io.StringIO()):
             vqueue.main(["reseal", "a"])
-        rec.assert_called_once_with(eps / "a")
+        rec.assert_called_once_with(self.eps / "a")
         self.assertEqual(load()[0]["status"], "preview_ready")
+
+    def test_cli_reseal_refusal_exits(self):
+        self.failed("a", yt_id="yt_a")
+        (self.eps / "a/out/final/reel_with_song.mp4").write_bytes(b"new")
+        with mock.patch.object(self.yt, "video_exists", return_value=True):
+            with self.assertRaises(SystemExit) as cm:
+                vqueue.main(["reseal", "a"])
+        self.assertIn("re-run finish", str(cm.exception.code))
+
+
+def _find_rec(rid):
+    return next(r for r in load() if r["id"] == rid)
 
 
 class TestApproveNetworkErrors(QueueTestBase):

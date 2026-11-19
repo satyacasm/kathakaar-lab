@@ -69,6 +69,14 @@ class YoutubeOpsTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, 404)
         self.assertEqual(h.call_count, 1)
 
+    def test_video_privacy(self):
+        with mock.patch.object(yt, "http", return_value={"items": [{"status": {"privacyStatus": "unlisted"}}]}) as h:
+            self.assertEqual(yt.video_privacy("v"), "unlisted")
+        self.assertEqual(h.call_args.args[0], "GET")
+        self.assertIn("part=status", h.call_args.args[1])
+        with mock.patch.object(yt, "http", return_value={"items": []}):
+            self.assertIsNone(yt.video_privacy("v"))
+
     def test_set_privacy_rejects_unknown(self):
         with mock.patch.object(yt, "http") as h:
             with self.assertRaises(ValueError):

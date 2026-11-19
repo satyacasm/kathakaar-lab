@@ -297,6 +297,13 @@ def video_exists(video_id: str) -> bool:
     return len(r.get("items", [])) == 1
 
 
+def video_privacy(video_id: str) -> str | None:
+    """The video's live privacyStatus, or None if the channel's API does not return it (gone)."""
+    q = urllib.parse.urlencode({"part": "status", "id": video_id})
+    items = http("GET", f"{API}/videos?{q}", headers=auth_headers(), timeout=15).get("items", [])
+    return (items[0].get("status") or {}).get("privacyStatus") if len(items) == 1 else None
+
+
 def set_privacy(video_id: str, privacy: str) -> str:
     if privacy not in PRIVACIES:
         raise ValueError(f"privacy must be one of {PRIVACIES}, got {privacy!r}")

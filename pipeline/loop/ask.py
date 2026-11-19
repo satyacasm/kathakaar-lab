@@ -56,7 +56,8 @@ def _ready(records):
 def _item(r):
     cell = r.get("cell") or {}
     ig = "by hand" if r.get("ig_mode") == "manual" else "api"
-    link = f"https://youtu.be/{r['yt_id']} (private)" if r.get("yt_id") else "no YouTube link"
+    link = (f"https://youtu.be/{r['yt_id']}" + ("" if r.get("yt_public") else " (private)")
+            if r.get("yt_id") else "no YouTube link")
     cap = _caption(r["id"])
     return (f"{r['id']} · {cell.get('format', '?')}/{cell.get('audio', '?')} · {_title(r['id'])} · {link}"
             f" · IG: {ig}" + (f" · caption: {cap}" if cap else "") + f" · {r.get('credits', 0)} credits")

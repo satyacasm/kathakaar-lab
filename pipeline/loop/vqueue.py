@@ -9,8 +9,9 @@
   vqueue.py rejections --since YYYY-MM-DD  rejected on/after the date: date | id | format / audio | reason
   vqueue.py reject <id> --reason "..."   preview_ready -> rejected, reason stored on one line; then the private
                                          YouTube preview is deleted (best effort; yt_deleted: true when done)
-  vqueue.py reseal <id>                  failed -> preview_ready for a record whose private preview still exists:
-                                         re-records the digests of the episode as it is now; approve again after
+  vqueue.py reseal <id>                  failed -> preview_ready for a record whose private preview still exists,
+                                         is not public, and whose video/youtube.md/titles are unchanged (Instagram
+                                         caption or song may differ): re-records the digests; approve again after
   vqueue.py requeue <id>                 failed -> planned, only for records with no YouTube preview (else: reseal)
 
 Status flow: planned -> producing -> preview_ready -> approved -> posted (rejected / failed on the side).
@@ -199,14 +200,26 @@ def reject(record_id: str, reason: str) -> dict:
     return transition(record_id, "rejected", reason=one_line(reason))
 
 
-def delete_rejected_preview(record_id: str, delete: Callable[[str], None], notify: Callable[[str], None]) -> bool:
-    """After reject() (outside the queue lock): delete the record's private YouTube preview, best effort.
-    Success -> yt_deleted: true on the record; failure -> notify("could not delete private preview <id>: ...")."""
+def delete_rejected_preview(record_id: str, delete: Callable[[str], None], notify: Callable[[str], None],
+                            privacy: Callable[[str], str | None]) -> bool:
+    """After reject() (outside the queue lock): delete the record's private YouTube preview, best effort, and only
+    while it is still private: never when the record says yt_public, and only if the live privacyStatus (privacy())
+    is "private" (None = already gone). Success -> yt_deleted: true; anything else -> notify(...) and no delete."""
     r = _find(load(), record_id)
     yt_id = r.get("yt_id")
     if r["status"] != "rejected" or not yt_id or r.get("yt_deleted"):
         return False
+    if r.get("yt_public"):
+        notify(f"refused to delete {yt_id} of rejected {record_id}: not private (the record says it is public)")
+        return False
     try:
+        live = privacy(yt_id)
+        if live is None:  # already gone
+            update(record_id, yt_deleted=True)
+            return True
+        if live != "private":
+            notify(f"refused to delete {yt_id} of rejected {record_id}: not private (YouTube says {live})")
+            return False
         delete(yt_id)
     except (Exception, SystemExit) as e:
         notify(f"could not delete private preview {yt_id} of rejected {record_id}: {one_line(e)}")
@@ -225,23 +238,33 @@ def requeue(record_id: str) -> dict:
         return r
 
 
-def reseal(record_id: str, exists: Callable[[str], bool], digests: Callable[[str], dict]) -> dict:
-    """failed -> preview_ready for a record whose private preview still exists: record the episode's digests as
-    they are now and clear the slot and retry state. Needs a fresh approve."""
+def reseal(record_id: str, exists: Callable[[str], bool], digests: Callable[[str], dict],
+           yt_change: Callable[[dict, dict], str | None]) -> dict:
+    """failed -> preview_ready for a record whose private preview still exists and is still what would go public:
+    only Instagram-side changes (caption_instagram.txt, song fields) may be resealed; a changed video file, youtube.md
+    or title needs a new preview (yt_change(old, new) names it). Clears the slot and retry state; needs a fresh approve."""
     r = _find(load(), record_id)
     if r["status"] != "failed":
         raise QueueError(f"{record_id}: status is {r['status']}, only failed records can be resealed")
+    if r.get("yt_public"):
+        raise QueueError(f"{record_id}: already public on YouTube: use the Instagram retry path; not resealable")
     if not r.get("yt_id"):
         raise QueueError(f"{record_id}: no private preview to reseal; use requeue")
+    fields = digests(record_id)
+    changed = yt_change(r, fields)
+    if changed:
+        raise QueueError(f"{record_id}: video or YouTube text changed since the preview was uploaded ({changed}): "
+                         f"needs a new preview: re-run finish")
     if not exists(r["yt_id"]):  # network, outside the lock
         raise QueueError(f"{record_id}: private preview {r['yt_id']!r} not found on YouTube; nothing to reseal "
                          f"(the record stays failed)")
-    fields = digests(record_id)
     with _edit() as records:
         r = _find(records, record_id)
-        if r["status"] != "failed":
-            raise QueueError(f"{record_id}: status changed to {r['status']} meanwhile")
+        if r["status"] != "failed" or r.get("yt_public"):
+            raise QueueError(f"{record_id}: changed meanwhile (status {r['status']})")
         for k in RESEAL_CLEAR:
+            if r.get("yt_public") and k in ("ig_container", "ig_retry"):
+                continue  # Instagram state of a public video is never reset
             r[k] = None
         _set_status(r, "preview_ready", _now(), **fields)
         return r
@@ -305,7 +328,8 @@ def main(argv=None):
             _delete_preview_cli(args.id)  # after the queue lock is released
         elif args.cmd == "reseal":
             import integrity
-            rec = reseal(args.id, _video_exists(), lambda rid: integrity.record(EPISODES / rid))
+            rec = reseal(args.id, _video_exists(), lambda rid: integrity.record(EPISODES / rid),
+                         integrity.youtube_side_change)
             print(f"resealed {rec['id']} -> preview_ready; approve it again to schedule it")
         else:
             print(f"requeued {requeue(args.id)['id']}")
@@ -330,11 +354,15 @@ def _delete_preview_cli(record_id):
         import youtube_publish  # lazy: needs network/secrets
         youtube_publish.delete_video(yt_id)
 
+    def privacy(yt_id):
+        import youtube_publish
+        return youtube_publish.video_privacy(yt_id)
+
     def notify(msg):
         print(msg, file=sys.stderr)
         inbox.add(msg, "failure")
 
-    if delete_rejected_preview(record_id, delete, notify):
+    if delete_rejected_preview(record_id, delete, notify, privacy):
         print(f"deleted private preview of {record_id}")
 
 
