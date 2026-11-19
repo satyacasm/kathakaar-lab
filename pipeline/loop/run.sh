@@ -217,7 +217,6 @@ job_produce() {
           "Bash(python3 pipeline/loop/narration.py *)" \
           "Bash(python3 pipeline/loop/audio_pool.py *)" \
           "Bash(python3 pipeline/loop/plan.py show*)" \
-          "Bash(python3 pipeline/loop/plan.py next*)" \
           "Bash(python3 pipeline/loop/inbox.py *)" \
           "mcp__claude_ai_Higgsfield__generate_video" \
           "mcp__claude_ai_Higgsfield__generate_audio" \
