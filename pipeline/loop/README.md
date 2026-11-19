@@ -42,7 +42,12 @@ Note: `features.py`, `analytics.py yt map --set` and `review.py` write under `ca
 `cache/loop/queue.json` (git-ignored; atomic writes under an flock on `queue.json.lock`).
 
 Statuses: `planned -> producing -> preview_ready -> approved -> posted`, with `rejected` (from preview_ready) and
-`failed` (from planned/producing/approved; `requeue` sends it back to planned). Any other jump raises an error.
+`failed` (from planned/producing/approved). Any other jump raises an error. Recovery from `failed`:
+`reseal` (failed -> preview_ready) when the private preview still exists: it re-records the digests of the episode as it
+is now and clears the slot and retry state, so the video needs a fresh approve; `requeue` (failed -> planned) only for
+a record that never got a preview (it refuses with "use reseal" otherwise).
+`rejected` is the archive: the CLI `reject` then deletes the private YouTube preview (best effort; done = `yt_deleted:
+true`, a failure leaves an INBOX line "could not delete private preview <id>"). The episode folder stays on disk.
 Slots are 12:30 and 19:30 Asia/Kolkata; `approve` gives each video the next free slot and refuses unless the
 private YouTube preview still exists. A video later than 2 h past its slot is no longer due. Nothing is public
 without an approve.
@@ -51,8 +56,9 @@ without an approve.
 python3 pipeline/loop/vqueue.py list [--all]
 python3 pipeline/loop/vqueue.py show <id>
 python3 pipeline/loop/vqueue.py approve <id>...      # prints each slot in IST
-python3 pipeline/loop/vqueue.py reject <id> --reason "slow hook"
-python3 pipeline/loop/vqueue.py requeue <id>
+python3 pipeline/loop/vqueue.py reject <id> --reason "slow hook"   # also deletes the private preview
+python3 pipeline/loop/vqueue.py reseal <id>          # failed, preview still there: back to preview_ready
+python3 pipeline/loop/vqueue.py requeue <id>         # failed, never uploaded: back to planned
 ```
 
 ## The daily rhythm (IST)
@@ -76,6 +82,9 @@ python3 pipeline/loop/vqueue.py reject <id> --reason "slow hook"   # reason feed
 ```
 Nothing becomes public without an approve for that video: no approval means the slot is skipped. A video not posted
 within 2 h of its slot moves to the next free slot.
+
+Edited the caption (or the video, title, song) after approving? The publisher refuses it (the digests no longer match)
+and marks it `failed`. Run `python3 pipeline/loop/vqueue.py reseal <id>`, re-watch, then approve again.
 
 ## Pause and resume
 ```

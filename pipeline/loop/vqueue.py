@@ -7,14 +7,17 @@
   vqueue.py approve <id>...              preview_ready -> approved, each gets the next free IST slot
                                          (refused unless the private YouTube preview still exists)
   vqueue.py rejections --since YYYY-MM-DD  rejected on/after the date: date | id | format / audio | reason
-  vqueue.py reject <id> --reason "..."   preview_ready -> rejected, reason stored on one line
-  vqueue.py requeue <id>                 failed -> planned
+  vqueue.py reject <id> --reason "..."   preview_ready -> rejected, reason stored on one line; then the private
+                                         YouTube preview is deleted (best effort; yt_deleted: true when done)
+  vqueue.py reseal <id>                  failed -> preview_ready for a record whose private preview still exists:
+                                         re-records the digests of the episode as it is now; approve again after
+  vqueue.py requeue <id>                 failed -> planned, only for records with no YouTube preview (else: reseal)
 
 Status flow: planned -> producing -> preview_ready -> approved -> posted (rejected / failed on the side).
 Slots are 12:30 and 19:30 Asia/Kolkata. Nothing is public without an approve. The file is cache/loop/queue.json
 (git-ignored); writes are atomic and serialised by an flock on queue.json.lock.
 """
-import argparse, contextlib, fcntl, json, os, re, sys, tempfile
+import argparse, contextlib, fcntl, json, os, re, sys, tempfile, urllib.error
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -22,6 +25,8 @@ from zoneinfo import ZoneInfo
 
 LAB = Path(__file__).resolve().parents[2]
 QUEUE = LAB / "cache" / "loop" / "queue.json"
+EPISODES = LAB / "episodes"
+RESEAL_CLEAR = ("slot", "yt_retry", "ig_retry", "ig_container", "reason")
 
 STATUSES = ("planned", "producing", "preview_ready", "approved", "posted", "rejected", "failed")
 ALLOWED = {
@@ -29,7 +34,7 @@ ALLOWED = {
     "producing": {"preview_ready", "failed"},
     "preview_ready": {"approved", "rejected"},
     "approved": {"posted", "failed"},
-    "failed": {"planned"},
+    "failed": {"planned", "preview_ready"},
 }
 SLOTS = ("12:30", "19:30")
 TZ = ZoneInfo("Asia/Kolkata")
@@ -194,6 +199,54 @@ def reject(record_id: str, reason: str) -> dict:
     return transition(record_id, "rejected", reason=one_line(reason))
 
 
+def delete_rejected_preview(record_id: str, delete: Callable[[str], None], notify: Callable[[str], None]) -> bool:
+    """After reject() (outside the queue lock): delete the record's private YouTube preview, best effort.
+    Success -> yt_deleted: true on the record; failure -> notify("could not delete private preview <id>: ...")."""
+    r = _find(load(), record_id)
+    yt_id = r.get("yt_id")
+    if r["status"] != "rejected" or not yt_id or r.get("yt_deleted"):
+        return False
+    try:
+        delete(yt_id)
+    except (Exception, SystemExit) as e:
+        notify(f"could not delete private preview {yt_id} of rejected {record_id}: {one_line(e)}")
+        return False
+    update(record_id, yt_deleted=True)
+    return True
+
+
+def requeue(record_id: str) -> dict:
+    """failed -> planned; only when nothing was uploaded (a record with a private preview is resealed instead)."""
+    with _edit() as records:
+        r = _find(records, record_id)
+        if r.get("yt_id"):
+            raise QueueError(f"{record_id}: has private preview {r['yt_id']}; use reseal (then approve again)")
+        _set_status(r, "planned", _now())
+        return r
+
+
+def reseal(record_id: str, exists: Callable[[str], bool], digests: Callable[[str], dict]) -> dict:
+    """failed -> preview_ready for a record whose private preview still exists: record the episode's digests as
+    they are now and clear the slot and retry state. Needs a fresh approve."""
+    r = _find(load(), record_id)
+    if r["status"] != "failed":
+        raise QueueError(f"{record_id}: status is {r['status']}, only failed records can be resealed")
+    if not r.get("yt_id"):
+        raise QueueError(f"{record_id}: no private preview to reseal; use requeue")
+    if not exists(r["yt_id"]):  # network, outside the lock
+        raise QueueError(f"{record_id}: private preview {r['yt_id']!r} not found on YouTube; nothing to reseal "
+                         f"(the record stays failed)")
+    fields = digests(record_id)
+    with _edit() as records:
+        r = _find(records, record_id)
+        if r["status"] != "failed":
+            raise QueueError(f"{record_id}: status changed to {r['status']} meanwhile")
+        for k in RESEAL_CLEAR:
+            r[k] = None
+        _set_status(r, "preview_ready", _now(), **fields)
+        return r
+
+
 def due(now: datetime) -> dict | None:
     """Oldest approved record whose slot is within [now - LATE_GRACE, now]."""
     ok = [r for r in load() if r["status"] == "approved" and r.get("slot")
@@ -230,6 +283,7 @@ def main(argv=None):
     r = sub.add_parser("reject"); r.add_argument("id"); r.add_argument("--reason", required=True)
     rj = sub.add_parser("rejections"); rj.add_argument("--since", required=True, metavar="YYYY-MM-DD")
     sub.add_parser("requeue").add_argument("id")
+    sub.add_parser("reseal").add_argument("id")
     args = ap.parse_args(argv)
     try:
         if args.cmd == "list":
@@ -239,10 +293,7 @@ def main(argv=None):
         elif args.cmd == "show":
             print(json.dumps(_find(load(), args.id), indent=2, ensure_ascii=False))
         elif args.cmd == "approve":
-            import youtube_publish  # lazy: needs network/secrets
-            exists = getattr(youtube_publish, "video_exists", None)
-            if exists is None:
-                raise QueueError("youtube_publish.video_exists is not available yet; cannot verify the private preview")
+            exists = _video_exists()
             for rec in approve(args.ids, _now(), exists):
                 print(f"approved {rec['id']} -> {_ist(rec['slot'])}")
         elif args.cmd == "rejections":
@@ -251,12 +302,43 @@ def main(argv=None):
                 print(f"{rec['rejected_on']} | {rec['id']} | {c.get('format') or '-'} / {c.get('audio') or '-'} | {rec['reason']}")
         elif args.cmd == "reject":
             print(f"rejected {reject(args.id, args.reason)['id']}")
+            _delete_preview_cli(args.id)  # after the queue lock is released
+        elif args.cmd == "reseal":
+            import integrity
+            rec = reseal(args.id, _video_exists(), lambda rid: integrity.record(EPISODES / rid))
+            print(f"resealed {rec['id']} -> preview_ready; approve it again to schedule it")
         else:
-            print(f"requeued {transition(args.id, 'planned')['id']}")
+            print(f"requeued {requeue(args.id)['id']}")
     except QueueError as e:
         sys.exit(f"error: {e}")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:  # URLError is an OSError; listed for clarity
+        sys.exit(f"error: could not reach YouTube to check the private preview ({one_line(e)}); nothing changed, try again")
+
+
+def _video_exists():
+    import youtube_publish  # lazy: needs network/secrets
+    exists = getattr(youtube_publish, "video_exists", None)
+    if exists is None:
+        raise QueueError("youtube_publish.video_exists is not available yet; cannot verify the private preview")
+    return exists
+
+
+def _delete_preview_cli(record_id):
+    import inbox
+
+    def delete(yt_id):
+        import youtube_publish  # lazy: needs network/secrets
+        youtube_publish.delete_video(yt_id)
+
+    def notify(msg):
+        print(msg, file=sys.stderr)
+        inbox.add(msg, "failure")
+
+    if delete_rejected_preview(record_id, delete, notify):
+        print(f"deleted private preview of {record_id}")
 
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # for youtube_publish
+    sys.path.insert(0, str(Path(__file__).resolve().parent))      # for inbox, integrity
     main()

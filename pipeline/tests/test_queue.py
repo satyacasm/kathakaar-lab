@@ -1,4 +1,5 @@
-import multiprocessing, os, sys, tempfile, unittest
+import contextlib, fcntl, io, multiprocessing, os, sys, tempfile, unittest
+from unittest import mock
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -164,6 +165,139 @@ class TestQueue(QueueTestBase):
         self.assertEqual(load()[0]["status"], "planned")
         with self.assertRaises(QueueError):
             vqueue.update("u", status="posted")
+
+
+class TestRejectDeletesPreview(QueueTestBase):
+    def setUp(self):
+        super().setUp()
+        import inbox, youtube_publish
+        self.yt, self.inbox = youtube_publish, inbox
+        p = mock.patch.object(inbox, "add")
+        self.inbox_add = p.start()
+        self.addCleanup(p.stop)
+
+    def _cli(self, *argv):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            vqueue.main(list(argv))
+
+    def test_library_reject_is_pure(self):
+        self.make("a", yt_id="yt_a")
+        with mock.patch.object(self.yt, "delete_video") as d:
+            reject("a", "meh")
+        d.assert_not_called()
+
+    def test_cli_reject_deletes_after_lock_released(self):
+        self.make("a", yt_id="yt_a")
+        seen = {}
+
+        def fake_delete(vid):
+            seen["vid"] = vid
+            with open(self.path.with_name(self.path.name + ".lock"), "w") as f:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises if the queue lock were still held
+                seen["status"] = load()[0]["status"]
+
+        with mock.patch.object(self.yt, "delete_video", side_effect=fake_delete):
+            self._cli("reject", "a", "--reason", "weak hook")
+        self.assertEqual(seen, {"vid": "yt_a", "status": "rejected"})
+        rec = load()[0]
+        self.assertEqual(rec["status"], "rejected")
+        self.assertIs(rec["yt_deleted"], True)
+        self.inbox_add.assert_not_called()
+
+    def test_cli_reject_delete_failure_goes_to_inbox(self):
+        self.make("a", yt_id="yt_a")
+        with mock.patch.object(self.yt, "delete_video", side_effect=self.yt.YTError(403, "quota")):
+            self._cli("reject", "a", "--reason", "weak hook")
+        rec = load()[0]
+        self.assertEqual(rec["status"], "rejected")
+        self.assertNotIn("yt_deleted", rec)
+        text, kind = self.inbox_add.call_args.args
+        self.assertEqual(kind, "failure")
+        self.assertIn("could not delete private preview yt_a", text)
+
+    def test_cli_reject_without_preview_skips_delete(self):
+        self.make("a")
+        with mock.patch.object(self.yt, "delete_video") as d:
+            self._cli("reject", "a", "--reason", "x")
+        d.assert_not_called()
+
+
+class TestResealRequeue(QueueTestBase):
+    def failed(self, rid, **fields):
+        self.make(rid, **fields)
+        recs = load()
+        for r in recs:
+            if r["id"] == rid:
+                r.update(status="failed", reason="package changed", slot="2026-11-19T12:30:00+05:30",
+                         yt_retry=1, ig_retry=1, ig_container="c1", final_sha256={"x": "old"})
+        save(recs)
+
+    def test_reseal_back_to_preview_ready_with_new_digests(self):
+        self.failed("a", yt_id="yt_a")
+        r = vqueue.reseal("a", lambda vid: vid == "yt_a", lambda rid: {"final_sha256": {"x": "new"},
+                                                                        "package_sha256": {}, "meta_sha256": "m"})
+        self.assertEqual(r["status"], "preview_ready")
+        rec = load()[0]
+        for k in ("slot", "yt_retry", "ig_retry", "ig_container", "reason"):
+            self.assertIsNone(rec[k], k)
+        self.assertEqual(rec["final_sha256"], {"x": "new"})
+        self.assertEqual(rec["meta_sha256"], "m")
+        self.assertEqual(rec["history"][-1][1], "preview_ready")
+        # still needs a fresh approval
+        out = approve(["a"], datetime(2026, 11, 19, 9, 0, tzinfo=TZ), lambda vid: True)
+        self.assertEqual(out[0]["status"], "approved")
+
+    def test_reseal_refuses_missing_preview(self):
+        self.failed("a", yt_id="yt_a")
+        with self.assertRaisesRegex(QueueError, "not found"):
+            vqueue.reseal("a", lambda vid: False, lambda rid: {})
+        self.assertEqual(load()[0]["status"], "failed")
+
+    def test_reseal_refuses_non_failed_and_no_preview(self):
+        self.make("a", yt_id="yt_a")
+        with self.assertRaisesRegex(QueueError, "only failed"):
+            vqueue.reseal("a", lambda vid: True, lambda rid: {})
+        self.failed("b")
+        with self.assertRaisesRegex(QueueError, "requeue"):
+            vqueue.reseal("b", lambda vid: True, lambda rid: {})
+
+    def test_requeue_only_without_preview(self):
+        self.failed("a", yt_id="yt_a")
+        with self.assertRaisesRegex(QueueError, "use reseal"):
+            vqueue.requeue("a")
+        self.assertEqual(load()[0]["status"], "failed")
+        self.failed("b")
+        self.assertEqual(vqueue.requeue("b")["status"], "planned")
+
+    def test_cli_requeue_refusal_exits(self):
+        self.failed("a", yt_id="yt_a")
+        with self.assertRaises(SystemExit) as cm:
+            vqueue.main(["requeue", "a"])
+        self.assertIn("use reseal", str(cm.exception.code))
+
+    def test_cli_reseal_uses_integrity_of_episode(self):
+        import integrity, youtube_publish
+        self.failed("a", yt_id="yt_a")
+        eps = Path(self.tmp.name) / "episodes"
+        with mock.patch.object(vqueue, "EPISODES", eps), \
+             mock.patch.object(youtube_publish, "video_exists", return_value=True), \
+             mock.patch.object(integrity, "record", return_value={"meta_sha256": "z"}) as rec, \
+             contextlib.redirect_stdout(io.StringIO()):
+            vqueue.main(["reseal", "a"])
+        rec.assert_called_once_with(eps / "a")
+        self.assertEqual(load()[0]["status"], "preview_ready")
+
+
+class TestApproveNetworkErrors(QueueTestBase):
+    def test_approve_network_error_clean_exit(self):
+        import socket, urllib.error, youtube_publish
+        self.make("a", yt_id="yt_a")
+        for err in (urllib.error.URLError("dns"), TimeoutError("slow"), socket.timeout("t"), ConnectionResetError()):
+            with mock.patch.object(youtube_publish, "video_exists", side_effect=err):
+                with self.assertRaises(SystemExit) as cm:
+                    vqueue.main(["approve", "a"])
+            self.assertIn("could not reach YouTube", str(cm.exception.code))
+            self.assertEqual(load()[0]["status"], "preview_ready")
 
 
 if __name__ == "__main__":
