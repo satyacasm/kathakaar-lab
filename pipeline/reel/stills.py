@@ -6,6 +6,7 @@ Pose edits: the base still is image 1 (the picture to edit); the character ref i
 unless config "still.pose_with_ref" is true (see report: passing it made the model re-compose).
 """
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -43,6 +44,8 @@ def _generate(cmd_base, prompt, out, seed, cfg, images=None, guidance=None):
         cmd += ["--image-paths", *map(str, images)]
     if guidance is not None:
         cmd += ["--guidance", str(guidance)]
+    if cfg.get("low_ram") or os.environ.get("REEL_LOW_RAM") == "1":   # opt-in when other apps fill the 16 GB
+        cmd += ["--low-ram"]
     pfile.write_text(prompt + "\n")
     out.with_suffix(".cmd.txt").write_text(" ".join(cmd) + "\n")
     # mflux never overwrites: with the output present it writes <name>_1.png instead, so a forced

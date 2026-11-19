@@ -12,3 +12,10 @@
 | `tools/rife/rife-ncnn-vulkan-20221029-macos/` (model `rife-v4.6` used) | github.com/nihui/rife-ncnn-vulkan release 20221029 | MIT (binary); RIFE weights from hzwer/Practical-RIFE, MIT |
 | `tools/esrgan/` (model `realesr-animevideov3`) | github.com/xinntao/Real-ESRGAN release v0.2.5.0, `realesrgan-ncnn-vulkan-20220424-macos.zip` | Real-ESRGAN BSD-3-Clause; ncnn-vulkan wrapper MIT |
 | pip `onnxruntime` 1.31.1 in `pipeline/.venv` | PyPI | MIT |
+
+## Loop audio
+
+| Date | Title | Artist | URL | Licence | Kind |
+|---|---|---|---|---|---|
+| 2026-11-19 | devotional-tanpura-bansuri.mp3 | Higgsfield generate_audio | job 7feca204-e766-4287-8d57-a516885db7d6 | generated; prompt: Quiet devotional underscore: tanpura drone, slow bansuri, frame drum, low strings (ElevenLabs Music v2.5, instrumental) | loop original |
+| 2026-11-19 | tense-dhol-shehnai.mp3 | Higgsfield generate_audio | job 446dc0bb-7cbc-4d09-9ced-1c6f3aea5e43 | generated; prompt: Tense epic underscore: spaced dhol/taiko hits, shehnai drone, rising low strings (ElevenLabs Music v2.5, instrumental) | loop original |

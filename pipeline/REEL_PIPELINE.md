@@ -217,6 +217,8 @@ Ledger: `episodes/credits.json` (not in git): `{"entries": [{"date": "2026-11-11
 - Stills: `mflux-generate-flux2` (new image) and `mflux-generate-flux2-edit --image-paths ...` (reference or pose
   edit), both with `--model flux2-klein-4b --quantize 4 --steps 4`. klein 4B is Apache 2.0; do not use klein 9B,
   FLUX.1 dev or Kontext (non-commercial).
+- When other apps leave little free RAM (swap near full, a still taking 5+ min), run the stills stage with
+  `REEL_LOW_RAM=1` (or `"low_ram": true` under `still` in config.json): adds mflux `--low-ram`.
 - Licences: only tools and weights that allow commercial use. Record each new one in the root `ASSETS.md`.
 
 ## Demo episode
