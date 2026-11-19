@@ -243,13 +243,17 @@ if [ -e "$LOOP/PAUSE" ]; then log "paused (cache/loop/PAUSE exists); not running
 LOCK="$LOOP/locks/$JOB.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   STALE_MIN=180; [ "$JOB" = "produce" ] && STALE_MIN=330   # the producer legitimately runs 01:00-06:00
-  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +"$STALE_MIN" 2>/dev/null)" ]; then
+  HOLDER=$(cat "$LOCK/pid" 2>/dev/null)
+  if [ -n "$HOLDER" ] && ! kill -0 "$HOLDER" 2>/dev/null; then
+    log "lock holder pid $HOLDER is gone, taking over"; rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || { log "lock race, skipping"; exit 0; }
+  elif [ -n "$(find "$LOCK" -maxdepth 0 -mmin +"$STALE_MIN" 2>/dev/null)" ]; then
     log "stale lock (>${STALE_MIN} min), taking over"; rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || { log "lock race, skipping"; exit 0; }
   else
     log "skipped: already running (lock $LOCK)"; exit 0
   fi
 fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+echo $$ > "$LOCK/pid"
+trap 'rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null' EXIT
 
 START=$(date +%s)
 log "start"
