@@ -161,7 +161,10 @@ Check the clip with `P frame` at several points (not only the first) for drift i
   used). If none fits the story, `P fallback` and `inbox.py add "supply a popular song for <story>" --kind decision`.
 - `library`: `audio_pool.py list library`; if nothing fits, find a track on pixabay.com/music (WebSearch/WebFetch),
   then `audio_pool.py fetch <url> --title ... --artist ... --licence https://pixabay.com/service/license-summary/`,
-  then `P copy-song <id> library/<file> ...`.
+  then `P copy-song <id> library/<file> ...`. Pixabay currently answers HTTP 403 to every automated fetch: after one
+  403, do not retry and do not generate; reuse the best-fitting track already in the pool (`list library`, then
+  `list original`) with `P copy-song <id> <kind>/<file> ...` (0 credits). `library` means "a reused pool track";
+  only `original` buys a fresh track. Fail the video only when the pool is empty.
 - `original`: quote with `estimate_audio_cost`; `P can-spend <quote>` must say OK; `generate_audio` (instrumental,
   describe mood/tempo/instruments, no artist names) with params `{"model": "elevenlabs_music_v2_5", "prompt": "...",
   "duration": <seconds, 15-120>, "force_instrumental": true, "batch_size": 1, "use_unlim": false}` (about 11 credits
